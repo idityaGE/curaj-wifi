@@ -21,11 +21,11 @@ Build output:
 ```
 app-debug.apk   4.3 MB
 package         in.ac.curaj.autologin
-versionName     1.3  (versionCode 4)
+versionName     1.4  (versionCode 5)
 minSdk          26
 targetSdk       35
 signature       APK Signature Scheme v2 (debug key)
-sha256          879d23fb068e2a9c5d401974f9460cb169ab2a4bec3c583cc32313ce3ae5a6dd
+sha256          eb9a884cb57280f90c000fad308844cf755d9ab09387c37fda56fa4509bf21cd
 ```
 
 ---
@@ -173,6 +173,15 @@ The first APK compiled but exposed two runtime issues that are now fixed in
 * The notification used to publish every transition. It now exposes only
   **Connected**, **Sign-in failed**, and **Disconnected**, with duplicate
   updates suppressed.
+
+1.4 adds the two-session limit flow:
+
+* `newlogin.do` can return `Maximum session allowed reached`. The app lists the
+  sessions, asks which one to close, and retries only after a verified close.
+* The close request needs a **splash-context** `JSESSIONID`. A direct
+  self-care cookie gets `302 http://1.254.254.254?N=...` and leaves the session
+  alive. The app now obtains the context cookie first and verifies against a
+  second list; it no longer treats the `302` as success.
 
 The full engineering narrative is in
 [ANDROID-ARCHITECTURE.md](ANDROID-ARCHITECTURE.md).

@@ -297,6 +297,61 @@ logged out: session: JSESSIONID; logout.do -> 200; nas/logout -> 200
 real 0m8.256s
 ```
 
+### 8.3 Closing one chosen session: direct self-care cookie (failure)
+
+```text
+GET /userportal/pages/usermedia/curaj/app/campus/ui/login.jsp
+  -> Set-Cookie: JSESSIONID=<self-care>
+POST /userportal/newlogin.do
+  generatePassword=true&phone=0&type=1&username=...&password=...
+  -> 200, list works
+POST /userportal/logout.do?from=curses&sesno=137703075
+  Cookie: JSESSIONID=<self-care>
+  Content-Type: application/x-www-form-urlencoded
+
+HTTP/1.1 302 Moved Temporarily
+Location: http://1.254.254.254?N=1792595291001
+```
+
+Re-listing still showed `137703075`. GET, body/query variants, and following
+the `1.254.254.254` redirect all left the session alive.
+
+### 8.4 Closing one chosen session: splash-context cookie (success)
+
+```text
+GET http://1.254.254.254/login
+  -> meta refresh to http://122.252.242.93/userportal/?...&sc=...
+GET <portal URL>
+  -> Set-Cookie: JSESSIONID=<context>
+POST /userportal/newlogin.do
+  generatePassword=true&phone=0&type=1&...
+  -> 200
+POST /userportal/logout.do?from=curses&sesno=137706022
+  Cookie: JSESSIONID=<context>
+  Content-Type: application/x-www-form-urlencoded
+  Referer: http://122.252.242.93/userportal/currentSessions.do?from=Home
+  Content-Length: 0
+
+HTTP/1.1 200 OK
+Server: Apache/2.2.15 (CentOS)
+Content-Type: text/html;charset=ISO-8859-1
+```
+
+The body contains “Your Session Has Been Stopped”; the next
+`currentSessions.do` returned no rows. Browser capture confirmed the same
+request shape and that the browser’s cookie was the splash-context cookie.
+
+Live Linux rerun:
+
+```text
+$ curaj-login sessions --logout 137706181 --no-login
+logged out: logged out session 137706181
+$ curaj-login sessions
+no active sessions
+$ curaj-login once
+OK: logged in
+```
+
 ---
 
 ## 9. `sc` stability
@@ -341,6 +396,11 @@ loop backs off and retries.
 
 ```text
 PASS  refused untrusted portal
+PASS  max session detected
+PASS  self-care list parsed
+PASS  self-care used context cookie
+PASS  self-care did not create session
+PASS  specific session logged out
 PASS  login succeeded
 PASS  used sc token
 PASS  kept JSESSIONID
@@ -360,9 +420,11 @@ portal host (`127.0.0.1:8765` → `127.0.0.1`). Both clients now use
 
 ## 12. Tooling notes
 
-* `browser-harness` was inspected (`--help`, `skill`) but **not needed**:
-  the portal is plain HTTP and fully scriptable with `curl` / `http.client`.
-  No JS challenge, CAPTCHA or WebSocket is involved.
+* `browser-harness` was used for the decisive session-close experiment: it
+  loaded `currentSessions.do`, clicked **Close**, and captured the exact
+  request headers, cookie, `POST` body, and `200` response. The portal is
+  otherwise plain HTTP and scriptable with `curl` / `http.client`; there is no
+  JS challenge, CAPTCHA, or WebSocket.
 * REA (reverse-engineering skill) was loaded; there was no binary or JavaScript
   bundle to decompile. The target is a live HTTP service, so the investigation
   was protocol-level.

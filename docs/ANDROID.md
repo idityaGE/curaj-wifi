@@ -142,9 +142,11 @@ The app does not need to be open. After the first save it starts on boot.
 * Tapping the notification opens the app, which shows the last result and its
   timestamp.
 
-The notification is state-only. It shows **Connected**, **Sign-in failed**, or
-**Disconnected from campus Wi-Fi**; it does not post “signing in” or “waiting”
-messages, and identical states are not repeated.
+The notification is state-only. It shows **Connected**, **Session limit
+reached**, **Sign-in failed**, or **Disconnected from campus Wi-Fi**; it does
+not post “signing in” or “waiting” messages, and identical states are not
+repeated. A session-limit notification is posted separately at high priority
+with a **Manage sessions** action; the foreground notification stays silent.
 
 ### Log out
 
@@ -161,6 +163,25 @@ then:
 A bare `/logout` would be a no-op; the cookie binding step is what makes the
 portal actually tear down the session. The bind may briefly look like a login
 to the portal — that is intentional, and the immediate `logout.do` removes it.
+
+### Sessions
+
+The account allows two simultaneous sessions. The **Sessions** button (and the
+**Manage sessions** notification action) opens the portal’s
+`currentSessions.do` table and lets you close one chosen session:
+
+1. obtain a splash-context `JSESSIONID` (the cookie from the portal URL, not a
+   direct `login.jsp` cookie);
+2. log in with `type=1` (self-care, no third slot);
+3. parse `callClose(<sesno>)` from the table;
+4. `POST logout.do?from=curses&sesno=<id>` with an empty body and the context
+   cookie;
+5. re-list and report success only if the id is gone.
+
+A direct self-care cookie produces `302 http://1.254.254.254?N=...` and does
+not close the session. The app therefore never treats the `302` as success.
+See [SESSION-MANAGEMENT.md](SESSION-MANAGEMENT.md) for the captured requests
+and the live verification.
 
 ---
 
@@ -205,12 +226,15 @@ the exact local JDK 17 + command-line SDK setup.
    `username`, `password`, `phone=0`, `type=2`, `jsonresponse=1`.
 7. On `redirect_to_nas` or “Session already running”: call `logout.do` with the
    cookie, wait 1.5 s, retry once.
-8. On “Authentication already in progress for IP …”: do **not** send another
+8. On “Maximum session allowed reached”: report the limit, post **Manage
+   sessions**, and wait for the user to close one. Do not kick a session
+   automatically.
+9. On “Authentication already in progress for IP …”: do **not** send another
    `newlogin.do`. Poll the probe for up to 6 s; if it is still pending, return
    a transient result and retry after 3 s. This avoids racing Android’s own
    captive-portal login.
-9. Poll `generate_204` for up to 9 s; success means the NAS has opened the
-   gate, not merely that the portal said “success”.
+10. Poll `generate_204` for up to 9 s; success means the NAS has opened the
+    gate, not merely that the portal said “success”.
 
 ---
 
@@ -340,6 +364,10 @@ you are on a different captive portal — that is the pinning working.
   `logout.do` semantics, the app’s logout verification will fail closed: it
   keeps auto-login off and records `Logout failed: …` rather than claiming a
   logout that did not happen.
+* **Session close depends on the splash context.** A direct self-care cookie
+  can list sessions but gets `302` and does not close one. If the portal ever
+  stops issuing the context cookie from the splash URL, the session chooser
+  will report `portal did not close session …` and leave the session alone.
 
 ---
 

@@ -21,7 +21,8 @@ Everything here was derived from live traffic on `CURAJ CAMPUS CONNECT`
 | [docs/BUILD-ONLINE.md](docs/BUILD-ONLINE.md) | build the APK with GitHub Actions, Codemagic, Bitrise, Appcircle, GitLab CI, or Codespaces |
 | [docs/LOCAL-BUILD.md](docs/LOCAL-BUILD.md) | build the APK locally with JDK 17 + Android command-line tools, no Android Studio |
 | [docs/RELEASE-BUILD.md](docs/RELEASE-BUILD.md) | create/back up a release key, build a signed production APK, verify it, and distribute it |
-| [docs/ANDROID-TEST.md](docs/ANDROID-TEST.md) | live test on Android 16: install, DNS probe failure/fix, successful login, Wi-Fi reconnect, duplicate-auth race, logout |
+| [docs/ANDROID-TEST.md](docs/ANDROID-TEST.md) | live test on Android 16: install, DNS probe failure/fix, successful login, Wi-Fi reconnect, duplicate-auth race, logout, session limit |
+| [docs/SESSION-MANAGEMENT.md](docs/SESSION-MANAGEMENT.md) | the two-session limit, self-care login, why the splash context cookie is required, and verified close semantics |
 
 ---
 
@@ -167,14 +168,32 @@ $EDITOR ~/.config/curaj-wifi/config.json     # chmod 600, mobile + password
 curaj-login status        # online / blocked + portal URL
 curaj-login once          # one attempt, prints the portal's JSON
 curaj-login watch         # stay running
-curaj-login logout        # real logout (session-cookie based)
+curaj-login logout        # real logout of this device
+curaj-login sessions      # list active portal sessions
+curaj-login sessions --json
+curaj-login sessions --logout <ID>   # close one chosen session, then reconnect
 ```
+
+The account allows two simultaneous sessions. If login fails with
+`Maximum session allowed reached`, run `curaj-login sessions`, choose the
+session you are not using, and close it:
+
+```bash
+curaj-login sessions --logout 137706022
+```
+
+The client never closes a session automatically on the limit; it only lists
+them and lets you choose. See
+[docs/SESSION-MANAGEMENT.md](docs/SESSION-MANAGEMENT.md) for the full flow and
+the splash-context cookie requirement.
 
 Logout notes: `logout` takes ~8 s because a bare `GET /logout` is a no-op.
 It discovers the portal via `1.254.254.254`, opens a session, binds it with
-`newlogin.do`, then calls `logout.do` with that `JSESSIONID`. Because the
-background service re-logs in within 60 s, stop it first if you want to stay
-offline:
+`newlogin.do`, then calls `logout.do` with that `JSESSIONID`. To close one of
+two sessions instead, use `sessions --logout <ID>`; that path needs a
+**splash-context** cookie, not a direct self-care cookie (a direct cookie gets
+a misleading `302` and leaves the session alive). Because the background
+service re-logs in within 60 s, stop it first if you want to stay offline:
 
 ```bash
 systemctl --user stop curaj-login.service
@@ -221,13 +240,13 @@ Config keys:
 ## 5. Android
 
 Source: `android/` (Kotlin, minSdk 26, targetSdk 35). Current APK is
-**1.3** (versionCode 4).
+**1.4** (versionCode 5).
 
 ```
 app/src/main/java/in/ac/curaj/autologin/
-  MainActivity.kt      credentials, test, logout, status, settings shortcuts
+  MainActivity.kt      credentials, test, sessions, logout, status, settings
   Prefs.kt             EncryptedSharedPreferences (Keystore-backed)
-  PortalClient.kt      probe, portal discovery, host pinning, login/logout
+  PortalClient.kt      probe, discovery, host pinning, login/logout, sessions
   AutoLoginService.kt  foreground service + NetworkCallback + 60 s poll
   BootReceiver.kt      restarts after boot / app update
 ```
@@ -251,14 +270,15 @@ adb install app/build/outputs/apk/debug/app-debug.apk
 
 The signed release APK is at
 `android/app/build/outputs/apk/release/app-release.apk`. A prepared copy is in
-`dist/CURAJ-AutoLogin-1.3.apk`; see
-[docs/RELEASE-BUILD.md](docs/RELEASE-BUILD.md) for the keystore, verification,
-and distribution steps.
+`dist/CURAJ-AutoLogin-1.4.apk`
+(SHA-256 `58883579c95cb55b15c5fd10a09209e1c607125f4ce78b1bcdef0c3eba4b7eb8`);
+see [docs/RELEASE-BUILD.md](docs/RELEASE-BUILD.md) for the keystore,
+verification, and distribution steps.
 
 No Android SDK locally? The repo includes **GitHub Actions** workflows:
 push it to GitHub, open **Actions → Build Android APK → Run workflow**, then
 download the `curaj-autologin-debug` artifact. A signed release can be built
-by pushing a tag such as `v1.3` (configure the signing secrets first). See
+by pushing a tag such as `v1.4` (configure the signing secrets first). See
 [docs/BUILD-ONLINE.md](docs/BUILD-ONLINE.md) for the online options,
 [docs/LOCAL-BUILD.md](docs/LOCAL-BUILD.md) for the local JDK 17 + command-line
 SDK setup, or [docs/RELEASE-BUILD.md](docs/RELEASE-BUILD.md) for the signed
@@ -292,6 +312,11 @@ How it behaves:
 * **Log out and stop auto-login** performs a real portal logout (fresh
   `JSESSIONID` bound with `newlogin.do`, then `logout.do`), stops the service,
   and turns the background switch off so it does not sign straight back in.
+* **Sessions** lists the two active portal sessions and lets you close the one
+  you are not using. When login hits the two-session limit, a separate
+  high-priority notification offers **Manage sessions**; the foreground
+  notification stays low-priority and silent. Only the session you select is
+  closed, then auto-login retries.
 * Failed attempts back off 1 → 2 → 4 → 8 → 15 minutes, so a wrong password
   does not hammer the portal. **Login now** bypasses the backoff.
 * Credentials are encrypted with a Keystore master key.
@@ -312,7 +337,9 @@ How it behaves:
 * `sc` is a long-lived per-device token, not a CSRF defence; it is visible in
   every redirect and is bound to IP/MAC. See
   [docs/REVERSE-ENGINEERING.md](docs/REVERSE-ENGINEERING.md#7-the-sc-token).
-* `logout.do` is a state-changing GET.
+* `logout.do` is state-changing; the per-session Close button submits a
+  **POST**. The session-close path also requires the splash-context cookie,
+  which is why a direct self-care cookie gets a misleading `302`.
 
 ## 7. Limits / unknowns
 
@@ -323,8 +350,10 @@ How it behaves:
   Play-Store signed.
 * If the university changes the portal vendor or the redirect shape, update
   `PORTAL_URL_RE` in `linux/curaj-login` and the regexes in `PortalClient.kt`.
-* Session lifetime and whether one account can hold two simultaneous sessions
-  are still not measured; the service handles expiry by re-running the flow.
+* The account is limited to **two simultaneous internet sessions**. Both
+  clients list and close one chosen session; they never auto-kick. Session
+  lifetime is still not measured; the service handles expiry by re-running the
+  flow.
 
 ## 8. Reproducing the recon
 
@@ -359,11 +388,12 @@ curaj-wifi/
 │   ├── ANDROID.md
 │   ├── ANDROID-ARCHITECTURE.md
 │   ├── ANDROID-TEST.md
+│   ├── SESSION-MANAGEMENT.md
 │   ├── BUILD-ONLINE.md
 │   ├── LOCAL-BUILD.md
 │   └── RELEASE-BUILD.md
 ├── linux/
-│   ├── curaj-login          # client (status/once/watch/logout)
+│   ├── curaj-login          # client (status/once/watch/logout/sessions)
 │   ├── curaj-login.service  # systemd --user unit
 │   ├── 99-curaj-autologin   # optional NetworkManager dispatcher hook
 │   ├── config.example.json

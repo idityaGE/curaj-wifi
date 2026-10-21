@@ -34,6 +34,11 @@ object PortalClient {
     private const val TAG = "PortalClient"
     private const val REQUEST_URI = "http://connectivitycheck.gstatic.com/generate_204"
     private const val NAS_LOGOUT_URL = "http://1.254.254.254/logout"
+    private const val PORTAL_HOST = "122.252.242.93"
+    private const val SELF_CARE_LOGIN_PATH =
+        "/userportal/pages/usermedia/curaj/app/campus/ui/login.jsp"
+    private const val CURRENT_SESSIONS_PATH =
+        "/userportal/currentSessions.do?from=Home"
 
     /** Google generate_204 endpoints by IP; tried in order, no DNS needed. */
     private val CHECK_URLS = listOf(
@@ -48,13 +53,37 @@ object PortalClient {
      * this, a hostile Wi-Fi could serve a fake "/userportal" page and harvest
      * the password. Update this set if the university moves the portal.
      */
-    private val PORTAL_HOSTS = setOf("122.252.242.93")
+    private val PORTAL_HOSTS = setOf(PORTAL_HOST)
 
     data class Result(
         val ok: Boolean,
         val message: String,
         /** If > 0, retry soon without treating this as a hard failure. */
-        val retryMs: Long = 0L
+        val retryMs: Long = 0L,
+        /** The account already has its maximum two internet sessions. */
+        val sessionLimit: Boolean = false
+    )
+
+    data class Session(
+        val id: String,
+        val name: String,
+        val accountId: String,
+        val ratePlan: String,
+        val netId: String,
+        val startTime: String,
+        val duration: String,
+        val upload: String,
+        val download: String,
+        val total: String
+    ) {
+        fun summary(): String =
+            "$startTime\nDuration $duration  ·  $total\n$name ($accountId)"
+    }
+
+    data class SessionsResult(
+        val ok: Boolean,
+        val sessions: List<Session> = emptyList(),
+        val message: String = ""
     )
 
     private data class Http(
@@ -168,6 +197,17 @@ object PortalClient {
                 .ifBlank { json.optString("errorKey") }
                 .ifBlank { resp.body.take(160) }
                 .ifBlank { "HTTP ${resp.code}" }
+
+            // The account is limited to two simultaneous internet sessions.
+            // Never kick one automatically: the user chooses from the app.
+            if (isSessionLimit(reason) || isSessionLimit(resp.body)) {
+                Log.i(TAG, "portal session limit reached")
+                return Result(
+                    false,
+                    "session limit reached (2 active)",
+                    sessionLimit = true
+                )
+            }
 
             val stale = json.optString("errorKey") == "redirect_to_nas" ||
                 reason.contains("already running", ignoreCase = true)
@@ -301,10 +341,307 @@ object PortalClient {
         return Result(false, "could not verify logout")
     }
 
+    /**
+     * Open the portal's *self-care* login (`type=1`), not the internet login
+     * (`type=2`).  This management session can list and close internet
+     * sessions even when the account already has its two-session maximum, and
+     * it does not consume a third session itself.
+     */
+    fun listSessions(
+        network: Network,
+        user: String,
+        pass: String
+    ): SessionsResult {
+        if (user.isBlank() || pass.isBlank()) {
+            return SessionsResult(false, message = "no credentials saved")
+        }
+        val snapshot = selfCareSnapshot(network, user, pass)
+        return SessionsResult(snapshot.ok, snapshot.sessions, snapshot.message)
+    }
+
+    /** Close one chosen session and verify it is gone from the live list. */
+    fun logoutSession(
+        network: Network,
+        user: String,
+        pass: String,
+        id: String
+    ): Result {
+        if (!id.matches(Regex("\\d+"))) {
+            return Result(false, "session id must be numeric")
+        }
+        if (user.isBlank() || pass.isBlank()) {
+            return Result(false, "no credentials saved")
+        }
+
+        val snapshot = selfCareSnapshot(network, user, pass)
+        val initialCookie = snapshot.cookie
+        if (!snapshot.ok || initialCookie == null) {
+            return Result(false, snapshot.message.ifBlank {
+                "could not open self-care session"
+            })
+        }
+        var cookie: String = initialCookie
+        if (snapshot.sessions.none { it.id == id }) {
+            return Result(false, "session $id is not active")
+        }
+
+        val response = try {
+            request(
+                network,
+                "http://$PORTAL_HOST/userportal/logout.do" +
+                    "?from=curses&sesno=$id",
+                method = "POST",
+                body = ByteArray(0),
+                headers = mapOf(
+                    "Cookie" to cookie,
+                    "Content-Type" to "application/x-www-form-urlencoded",
+                    "Referer" to
+                        "http://$PORTAL_HOST$CURRENT_SESSIONS_PATH",
+                    "Origin" to "http://$PORTAL_HOST"
+                )
+            )
+        } catch (e: Exception) {
+            return Result(false, "logout request failed: ${e.message}")
+        }
+
+        // A 302 to http://1.254.254.254?N=... is not proof: an invalid or
+        // unauthorised id gets the same redirect and the session survives.
+        // Re-list and only report success when the id is really gone.
+        repeat(4) {
+            Thread.sleep(800)
+            val page = runCatching { fetchSessionsPage(network, cookie) }
+                .getOrNull()
+            if (page != null) {
+                val text = page.body
+                val validPage =
+                    !text.contains("Session has been expired", ignoreCase = true) &&
+                        (text.contains("Current Session", ignoreCase = true) ||
+                            text.contains("items found", ignoreCase = true))
+                if (validPage && parseSessions(text).none { it.id == id }) {
+                    return Result(true, "logged out session $id")
+                }
+            }
+
+            // The context/self-care cookie expired; open a fresh one.
+            val after = selfCareSnapshot(network, user, pass)
+            if (after.ok && after.sessions.none { it.id == id }) {
+                return Result(true, "logged out session $id")
+            }
+            if (after.ok) after.cookie?.let { cookie = it }
+        }
+
+        return Result(
+            false,
+            "portal did not close session $id (HTTP ${response.code})"
+        )
+    }
+
+    private data class SelfCareSnapshot(
+        val ok: Boolean,
+        val cookie: String?,
+        val sessions: List<Session>,
+        val message: String
+    )
+
+    private fun selfCareSnapshot(
+        network: Network,
+        user: String,
+        pass: String
+    ): SelfCareSnapshot {
+        val cookie = try {
+            selfCareCookie(network, user, pass)
+        } catch (e: Exception) {
+            return SelfCareSnapshot(
+                false, null, emptyList(),
+                "self-care login failed: ${e.message}"
+            )
+        } ?: return SelfCareSnapshot(
+            false, null, emptyList(), "self-care login issued no JSESSIONID"
+        )
+
+        var current = cookie
+        var page = try {
+            fetchSessionsPage(network, current)
+        } catch (e: Exception) {
+            return SelfCareSnapshot(
+                false, null, emptyList(), "session list failed: ${e.message}"
+            )
+        }
+
+        if (page.body.contains("Session has been expired", ignoreCase = true)) {
+            current = try {
+                selfCareCookie(network, user, pass)
+            } catch (e: Exception) {
+                null
+            } ?: return SelfCareSnapshot(
+                false, null, emptyList(), "self-care session expired"
+            )
+            page = try {
+                fetchSessionsPage(network, current)
+            } catch (e: Exception) {
+                return SelfCareSnapshot(
+                    false, null, emptyList(), "session list failed: ${e.message}"
+                )
+            }
+        }
+
+        if (page.body.contains("Session has been expired", ignoreCase = true)) {
+            return SelfCareSnapshot(
+                false, null, emptyList(),
+                "self-care login failed (check the saved password)"
+            )
+        }
+        if (!page.body.contains("Current Session", ignoreCase = true) &&
+            !page.body.contains("items found", ignoreCase = true)
+        ) {
+            val snippet = cleanCell(page.body).take(160)
+            return SelfCareSnapshot(
+                false, null, emptyList(), "unexpected session page: $snippet"
+            )
+        }
+        return SelfCareSnapshot(true, current, parseSessions(page.body), "")
+    }
+
+    /**
+     * The self-care page on its own can list sessions but cannot close them:
+     * logout.do then redirects to the NAS splash and leaves the session alive.
+     * The cookie from the portal splash URL carries the ip/mac/nas/sc context
+     * that the portal requires for a real close, so obtain that first.
+     */
+    private fun portalContextCookie(network: Network): String? {
+        val portal = findPortalForContext(network) ?: return null
+        if (!isTrustedPortal(portal)) {
+            Log.w(TAG, "refusing portal context from untrusted host: $portal")
+            return null
+        }
+        return cookieFrom(request(network, portal))
+    }
+
+    private fun findPortalForContext(network: Network): String? {
+        // Captive: the probe response already carries a fresh sc token.
+        try {
+            val first = probe(network)
+            if (first.code != 204) {
+                findPortal(first, network)?.let {
+                    if (isTrustedPortal(it)) return it
+                }
+            }
+        } catch (_: Exception) {
+            // fall through to the NAS splash
+        }
+        // Online: the probe is 204 and has no portal URL.
+        return findPortalForLogout(network)?.takeIf { isTrustedPortal(it) }
+    }
+
+    private fun isTrustedPortal(url: String): Boolean =
+        runCatching { URI(url).host?.lowercase() }.getOrNull() in PORTAL_HOSTS
+
+    private fun selfCareCookie(
+        network: Network,
+        user: String,
+        pass: String
+    ): String? {
+        val base = "http://$PORTAL_HOST"
+        val loginPage = base + SELF_CARE_LOGIN_PATH
+
+        // Prefer the context cookie.  Fall back to the direct self-care page
+        // only so listing still works when the NAS splash is unavailable;
+        // closing a session will then fail verification instead of lying.
+        var cookie = portalContextCookie(network)
+        if (cookie == null) {
+            val first = request(network, loginPage)
+            cookie = cookieFrom(first) ?: return null
+        }
+
+        val form = buildString {
+            append("generatePassword=true&phone=0&type=1")
+            append("&username=").append(URLEncoder.encode(user, "UTF-8"))
+            append("&password=").append(URLEncoder.encode(pass, "UTF-8"))
+        }
+        val second = request(
+            network,
+            "$base/userportal/newlogin.do",
+            method = "POST",
+            body = form.toByteArray(),
+            headers = mapOf(
+                "Cookie" to cookie,
+                "Content-Type" to "application/x-www-form-urlencoded",
+                "Referer" to loginPage,
+                "Origin" to base
+            )
+        )
+        cookieFrom(second)?.let { cookie = it }
+        return cookie
+    }
+
+    private fun fetchSessionsPage(network: Network, cookie: String): Http =
+        request(
+            network,
+            "http://$PORTAL_HOST$CURRENT_SESSIONS_PATH",
+            headers = mapOf(
+                "Cookie" to cookie,
+                "Referer" to "http://$PORTAL_HOST/userportal/home.do?from=Home"
+            )
+        )
+
+    private fun cookieFrom(resp: Http): String? =
+        resp.headerAll("Set-Cookie")
+            .firstOrNull {
+                it.startsWith("JSESSIONID=", ignoreCase = true)
+            }
+            ?.substringBefore(';')
+
+    private fun parseSessions(page: String): List<Session> {
+        val sessions = mutableListOf<Session>()
+        val rowRegex = Regex("(?is)<tr[^>]*>(.*?)</tr>")
+        val cellRegex = Regex("(?is)<td[^>]*>(.*?)</td>")
+        val idRegex = Regex("""callClose\((\d+)\)""")
+
+        for (row in rowRegex.findAll(page)) {
+            val rowHtml = row.groupValues[1]
+            val id = idRegex.find(rowHtml)?.groupValues?.get(1) ?: continue
+            val cells = cellRegex.findAll(rowHtml)
+                .map { cleanCell(it.groupValues[1]) }
+                .toList()
+            if (cells.size < 9) continue
+            sessions += Session(
+                id = id,
+                name = cells.getOrElse(0) { "" },
+                accountId = cells.getOrElse(1) { "" },
+                ratePlan = cells.getOrElse(2) { "" },
+                netId = cells.getOrElse(3) { "" },
+                startTime = cells.getOrElse(4) { "" },
+                duration = cells.getOrElse(5) { "" },
+                upload = cells.getOrElse(6) { "" },
+                download = cells.getOrElse(7) { "" },
+                total = cells.getOrElse(8) { "" }
+            )
+        }
+        return sessions
+    }
+
+    private fun cleanCell(raw: String): String =
+        raw.replace(Regex("(?is)<[^>]+>"), " ")
+            .replace("&nbsp;", " ", ignoreCase = true)
+            .replace("&amp;", "&", ignoreCase = true)
+            .replace("&lt;", "<", ignoreCase = true)
+            .replace("&gt;", ">", ignoreCase = true)
+            .replace(Regex("\\s+"), " ")
+            .trim()
+
+    private fun isSessionLimit(text: String): Boolean {
+        val value = text.lowercase()
+        return value.contains("maximum session") ||
+            value.contains("session allowed reached") ||
+            value.contains("maximum of 2") ||
+            value.contains("subscription allow")
+    }
+
     private fun findPortalForLogout(network: Network): String? {
         // While online the probe is 204 and has no portal URL, so the NAS
         // splash is the reliable discovery point; it answers in both states.
-        for (splash in listOf("http://1.254.254.254/", "http://1.254.254.254/login")) {
+        // /login is the reliable splash hop; / sometimes blackholes while online.
+        for (splash in listOf("http://1.254.254.254/login", "http://1.254.254.254/")) {
             try {
                 val found = findPortal(request(network, splash), network)
                 if (found != null && found.contains("/userportal")) return found

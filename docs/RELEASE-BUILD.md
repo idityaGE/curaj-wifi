@@ -37,7 +37,7 @@ android/app/build/outputs/apk/release/app-release.apk
 A copy prepared for sharing:
 
 ```
-dist/CURAJ-AutoLogin-1.3.apk
+dist/CURAJ-AutoLogin-1.4.apk
 dist/SHA256SUMS.txt
 dist/INSTALL.txt
 ```
@@ -45,13 +45,14 @@ dist/INSTALL.txt
 | item | value |
 |---|---|
 | package | `in.ac.curaj.autologin` |
-| version | 1.3 (versionCode 4) |
+| version | 1.4 (versionCode 5) |
 | size | 3.3 MB |
-| SHA-256 | `9a06fe5208d32b62e20f3d0489c8e2104c921e6115cae30a4eaa746e4de8dd66` |
+| SHA-256 | `58883579c95cb55b15c5fd10a09209e1c607125f4ce78b1bcdef0c3eba4b7eb8` |
 | APK signature | APK Signature Scheme v2, verified |
 | certificate SHA-256 | `55da02f424dbf6a4dfd9521b236c1bba4f598fe23db477afceea82fa894ac092` |
 
-The code is the tested 1.3 code. Only the build type and signing key differ.
+The code is the tested 1.3 login/logout code plus the 1.4 session-management
+changes. Only the build type and signing key differ.
 
 ---
 
@@ -162,7 +163,7 @@ Expected:
 ```
 Verifies
 Verified using v2 scheme (APK Signature Scheme v2): true
-package: name='in.ac.curaj.autologin' versionCode='4' versionName='1.3'
+package: name='in.ac.curaj.autologin' versionCode='5' versionName='1.4'
 application-label:'CURAJ Auto Login'
 ```
 
@@ -173,16 +174,16 @@ Then prepare the distribution copy:
 
 ```bash
 mkdir -p ~/curaj-wifi/dist
-cp "$APK" ~/curaj-wifi/dist/CURAJ-AutoLogin-1.3.apk
+cp "$APK" ~/curaj-wifi/dist/CURAJ-AutoLogin-1.4.apk
 cd ~/curaj-wifi/dist
-sha256sum CURAJ-AutoLogin-1.3.apk > SHA256SUMS.txt
+sha256sum CURAJ-AutoLogin-1.4.apk > SHA256SUMS.txt
 ```
 
 ---
 
 ## 7. How friends install it
 
-Send them `CURAJ-AutoLogin-1.3.apk` (and optionally `SHA256SUMS.txt` and
+Send them `CURAJ-AutoLogin-1.4.apk` (and optionally `SHA256SUMS.txt` and
 `INSTALL.txt`).
 
 On the phone:
@@ -233,7 +234,7 @@ you intentionally want a separate app.
 ## 9. Building the release in GitHub Actions
 
 The repository includes `.github/workflows/android-release.yml`. It builds a
-signed release when you push a tag such as `v1.3`, and attaches the APK to the
+signed release when you push a tag such as `v1.4`, and attaches the APK to the
 GitHub Release.
 
 Configure these repository secrets:
@@ -257,8 +258,8 @@ keystore or passwords into a workflow file or a commit.
 Then:
 
 ```bash
-git tag v1.3
-git push origin v1.3
+git tag v1.4
+git push origin v1.4
 ```
 
 The workflow writes the secrets to a temporary properties file, sets

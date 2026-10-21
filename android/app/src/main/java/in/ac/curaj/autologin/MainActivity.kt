@@ -13,9 +13,12 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
 import android.text.InputType
+import android.view.View
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
+import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.Switch
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
@@ -31,6 +34,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var status: TextView
     private lateinit var lastResult: TextView
     private var testing = false
+    private var sessionsBusy = false
 
     private val handler = Handler(Looper.getMainLooper())
     private val refresh = object : Runnable {
@@ -52,6 +56,7 @@ class MainActivity : AppCompatActivity() {
         val save = findViewById<Button>(R.id.save)
         val test = findViewById<Button>(R.id.test)
         val logout = findViewById<Button>(R.id.logout)
+        val sessions = findViewById<Button>(R.id.sessions)
         val battery = findViewById<Button>(R.id.battery)
         val wifiSettings = findViewById<Button>(R.id.wifi_settings)
         val showPassword = findViewById<CheckBox>(R.id.show_password)
@@ -144,6 +149,8 @@ class MainActivity : AppCompatActivity() {
                 .show()
         }
 
+        sessions.setOnClickListener { showSessionsDialog() }
+
         wifiSettings.setOnClickListener {
             startActivity(Intent(Settings.ACTION_WIFI_SETTINGS))
         }
@@ -154,6 +161,20 @@ class MainActivity : AppCompatActivity() {
             )
         }
         askNotificationPermission()
+
+        if (intent?.getBooleanExtra(EXTRA_MANAGE_SESSIONS, false) == true) {
+            intent.removeExtra(EXTRA_MANAGE_SESSIONS)
+            window.decorView.post { showSessionsDialog() }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (intent.getBooleanExtra(EXTRA_MANAGE_SESSIONS, false)) {
+            intent.removeExtra(EXTRA_MANAGE_SESSIONS)
+            showSessionsDialog()
+        }
     }
 
     override fun onResume() {
@@ -217,8 +238,170 @@ class MainActivity : AppCompatActivity() {
         }.start()
     }
 
+    private fun showSessionsDialog() {
+        if (sessionsBusy) return
+        val user = username.text.toString().trim()
+        val pass = password.text.toString()
+        if (!valid(user, pass)) return
+        val network = wifiNetwork()
+        if (network == null) {
+            status.text = "Not connected to Wi-Fi."
+            return
+        }
+
+        sessionsBusy = true
+        status.text = "Loading active sessions…"
+        Thread {
+            val result = runCatching {
+                PortalClient.listSessions(network, user, pass)
+            }.getOrElse {
+                PortalClient.SessionsResult(
+                    false,
+                    message = it.message ?: it.javaClass.simpleName
+                )
+            }
+            runOnUiThread {
+                sessionsBusy = false
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                if (!result.ok) {
+                    status.text = "Could not load sessions: ${result.message}"
+                    return@runOnUiThread
+                }
+                refreshStatus()
+                showSessionChooser(result.sessions)
+            }
+        }.start()
+    }
+
+    private fun showSessionChooser(sessions: List<PortalClient.Session>) {
+        val list = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(32, 12, 32, 12)
+        }
+        val scroll = ScrollView(this).apply { addView(list) }
+
+        val count = TextView(this).apply {
+            text = if (sessions.isEmpty()) {
+                "No active portal sessions."
+            } else {
+                "${sessions.size} active portal session(s). " +
+                    "Log out one to free a slot."
+            }
+            textSize = 15f
+            setPadding(0, 0, 0, 8)
+        }
+        list.addView(count)
+
+        lateinit var dialog: AlertDialog
+        sessions.forEachIndexed { index, session ->
+            val row = TextView(this).apply {
+                text = session.summary()
+                textSize = 14f
+                setPadding(0, 16, 0, 4)
+            }
+            list.addView(row)
+
+            val button = Button(this).apply {
+                text = "Log out this session"
+                setOnClickListener {
+                    confirmLogoutSession(session, dialog)
+                }
+            }
+            list.addView(button)
+
+            if (index < sessions.lastIndex) {
+                list.addView(View(this).apply {
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT, 1
+                    )
+                    setBackgroundColor(0x22000000)
+                })
+            }
+        }
+
+        dialog = AlertDialog.Builder(this)
+            .setTitle("Active portal sessions")
+            .setView(scroll)
+            .setPositiveButton("Close", null)
+            .setNeutralButton("Refresh") { _, _ -> showSessionsDialog() }
+            .create()
+        dialog.show()
+    }
+
+    private fun confirmLogoutSession(
+        session: PortalClient.Session,
+        parent: AlertDialog
+    ) {
+        AlertDialog.Builder(this)
+            .setTitle("Log out this session?")
+            .setMessage(
+                "${session.summary()}\n\n" +
+                    "If this is the phone you are using now, its Wi-Fi " +
+                    "connection will drop. Auto-login will try to sign " +
+                    "back in."
+            )
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Log out") { _, _ ->
+                doLogoutSession(session, parent)
+            }
+            .show()
+    }
+
+    private fun doLogoutSession(
+        session: PortalClient.Session,
+        parent: AlertDialog
+    ) {
+        if (sessionsBusy) return
+        val user = username.text.toString().trim()
+        val pass = password.text.toString()
+        if (!valid(user, pass)) return
+        val network = wifiNetwork()
+        if (network == null) {
+            status.text = "Not connected to Wi-Fi."
+            return
+        }
+
+        sessionsBusy = true
+        status.text = "Logging out session…"
+        Thread {
+            val result = runCatching {
+                PortalClient.logoutSession(
+                    network, user, pass, session.id
+                )
+            }.getOrElse {
+                PortalClient.Result(
+                    false, it.message ?: it.javaClass.simpleName
+                )
+            }
+            runOnUiThread {
+                sessionsBusy = false
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                if (!result.ok) {
+                    status.text = "Could not log out session: ${result.message}"
+                    return@runOnUiThread
+                }
+
+                parent.dismiss()
+                Prefs.record(
+                    this,
+                    "Logged out session ${session.startTime}"
+                )
+                if (Prefs.enabled(this)) {
+                    status.text = "Session ended. Reconnecting…"
+                    ContextCompat.startForegroundService(
+                        this,
+                        Intent(this, AutoLoginService::class.java)
+                            .setAction(AutoLoginService.ACTION_LOGIN_NOW)
+                    )
+                } else {
+                    status.text = "Session ended. Auto-login is OFF."
+                }
+            }
+        }.start()
+    }
+
     private fun refreshStatus() {
-        if (testing) return
+        if (testing || sessionsBusy) return
         val hasCreds = Prefs.username(this).isNotBlank() && Prefs.password(this).isNotBlank()
         status.text = when {
             !hasCreds -> "No credentials saved yet."
@@ -263,5 +446,10 @@ class MainActivity : AppCompatActivity() {
                 arrayOf(Manifest.permission.POST_NOTIFICATIONS), 100
             )
         }
+    }
+
+    companion object {
+        const val EXTRA_MANAGE_SESSIONS =
+            "in.ac.curaj.autologin.MANAGE_SESSIONS"
     }
 }

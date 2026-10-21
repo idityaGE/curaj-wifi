@@ -6,12 +6,12 @@ Tested against the real campus network, not a mock.
 |---|---|
 | phone | OnePlus CPH2793 |
 | Android | 16 |
-| app | `in.ac.curaj.autologin` 1.3 (versionCode 4) |
+| app | `in.ac.curaj.autologin` 1.4 (versionCode 5) |
 | network | `CURAJ CAMPUS CONNECT` |
 | Wi-Fi IP | `10.50.13.252/20` |
 | Wi-Fi MAC | `da:bb:9b:8f:fd:16` |
 | portal | `122.252.242.93` |
-| result | **login succeeded** (`204` through `wlan0`); **logout succeeded** in 1.3 |
+| result | 1.3: **login succeeded** (`204` through `wlan0`), **logout succeeded**. 1.4: release APK built and signature/metadata verified; the session-limit flow was verified live on Linux and needs the on-device pass below. |
 
 Credentials are not shown here.
 
@@ -194,7 +194,41 @@ response, so it is not just “the request was sent”. Auto-login remains off a
 the foreground notification is removed. Tap **SAVE AND START** to sign in and
 enable the background service again.
 
-## 8. What to test manually
+## 8. Two-session limit (1.4)
+
+This is the new release flow. Use two devices on the same account (or leave
+one stale session from another device) so both slots are occupied.
+
+1. Start auto-login on the phone. The portal answers
+   `Maximum session allowed reached`.
+2. The app records **Session limit reached** and posts a separate
+   high-priority notification with **Manage sessions**.
+3. Tap **Manage sessions** (or the **Sessions** button). The dialog should list
+   two sessions with start time, duration, total bytes, name, and account id.
+4. Tap **Log out this session** on the session that is **not** this phone, then
+   confirm. The app should report success only after re-listing the sessions
+   and seeing the id disappear.
+5. If auto-login is enabled, the app immediately retries the normal login and
+   should reach **Online**.
+6. Repeat using the phone’s own session: the Wi-Fi drops, the app should
+   reconnect on the next attempt, which is expected.
+
+What the live Linux verification established (same portal, same cookie rules):
+
+```
+before:  two active sessions
+close:   POST /userportal/logout.do?from=curses&sesno=137706181
+         with the splash-context JSESSIONID -> HTTP 200
+after:   currentSessions.do -> no active sessions
+relogin: newlogin.do -> success_net / success
+```
+
+A direct self-care cookie produced `302 http://1.254.254.254?N=...` and did
+**not** close the session. If the phone ever shows
+`portal did not close session ... (HTTP 302)`, that is the verification
+correctly refusing a false success; refresh the list and try again.
+
+## 9. What to test manually
 
 1. Open the app while on campus Wi-Fi. Tap **TEST LOGIN NOW**.
    * Fresh session → “Online”.
@@ -207,13 +241,18 @@ enable the background service again.
 6. Tap **LOG OUT AND STOP AUTO-LOGIN**, confirm, and check that the app records
    **Logged out**, the switch is off, and the service notification disappears.
    The portal page should be back on the next Wi-Fi request.
-7. Allow battery optimisation exemption if the OEM kills the service:
+7. Tap **Sessions** and confirm the list matches the portal’s two-session
+   table. Do not close the session you are using unless you want to reconnect.
+8. Allow battery optimisation exemption if the OEM kills the service:
    **ALLOW BACKGROUND (BATTERY OPTIMISATION)**.
 
-## 9. Notes
+## 10. Notes
 
-* The tested APK is version 1.3 (versionCode 4), SHA-256
+* The tested 1.3 APK is versionCode 4, SHA-256
   `879d23fb068e2a9c5d401974f9460cb169ab2a4bec3c583cc32313ce3ae5a6dd`.
+* The 1.4 release APK is versionCode 5, SHA-256
+  `58883579c95cb55b15c5fd10a09209e1c607125f4ce78b1bcdef0c3eba4b7eb8`
+  (debug: `eb9a884cb57280f90c000fad308844cf755d9ab09387c37fda56fa4509bf21cd`).
 * The app is a debug-signed APK. Android may show “unknown app” warnings when
   installing by `adb`; that is expected.
 * The portal is plain HTTP. The credentials are sent over the campus LAN in

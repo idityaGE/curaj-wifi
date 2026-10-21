@@ -149,21 +149,80 @@ No CSRF token, no nonce, no CAPTCHA.
 
 ---
 
-## 6. `logout.do`
+## 6. Session management
+
+The account allows **two** simultaneous internet sessions. When both are in
+use, `newlogin.do` returns the “Maximum session allowed reached” failure. The
+clients list the sessions and close only the one the user chooses.
+
+### 6.1 List sessions
 
 ```http
-GET /userportal/logout.do HTTP/1.1
+GET /userportal/currentSessions.do?from=Home HTTP/1.1
 Host: 122.252.242.93
-Cookie: JSESSIONID=<id>
+Cookie: JSESSIONID=<self-care>
+```
+
+Each row has `callClose(<sesno>)`. The table fields are name, account id, rate
+plan, net id, start time, duration, upload, download, and total bytes.
+
+### 6.2 Self-care login (`type=1`)
+
+```http
+POST /userportal/newlogin.do HTTP/1.1
+Host: 122.252.242.93
+Cookie: JSESSIONID=<splash-context>
+Content-Type: application/x-www-form-urlencoded
+Referer: http://122.252.242.93/userportal/pages/usermedia/curaj/app/campus/ui/login.jsp
+Origin: http://122.252.242.93
+
+generatePassword=true&phone=0&type=1&username=<mobile>&password=<password>
+```
+
+This is the account-management login, not the internet login (`type=2`). It
+does not consume a third session. The `login.jsp` form starts with `phone=1`
+but its `start()` JavaScript changes it to `0`; `phone=0` is correct for the
+POST.
+
+### 6.3 Close one chosen session
+
+```http
+POST /userportal/logout.do?from=curses&sesno=<sesno> HTTP/1.1
+Host: 122.252.242.93
+Cookie: JSESSIONID=<splash-context>
+Content-Type: application/x-www-form-urlencoded
+Referer: http://122.252.242.93/userportal/currentSessions.do?from=Home
+Origin: http://122.252.242.93
+Content-Length: 0
 ```
 
 | condition | result |
 |---|---|
-| with bound cookie | `200`, real deauth |
-| without cookie | `302 http://1.254.254.254?N=<epoch-ms>`, no deauth |
+| valid id + **splash-context** cookie | `200`, “Your Session Has Been Stopped”, session gone |
+| valid id + direct self-care cookie | `302 http://1.254.254.254?N=<epoch-ms>`, **session survives** |
+| invalid/expired id | same `302`, no close |
 
-To get a bound cookie while already online: `GET 1.254.254.254/` → portal URL
-→ `GET` it for a `JSESSIONID` → `POST newlogin.do` (usually answers
+The splash-context cookie is obtained by `GET`ting the portal URL
+(`/userportal/?...&ip=...&mac=...&sc=...`) before the self-care login. A direct
+`GET login.jsp` cookie can list sessions but is not sufficient to close one.
+Verify success by fetching `currentSessions.do` again and checking that the
+`sesno` disappeared; never trust the `302` alone.
+
+### 6.4 Log out this device
+
+```http
+GET /userportal/logout.do HTTP/1.1
+Host: 122.252.242.93
+Cookie: JSESSIONID=<id bound by newlogin.do>
+```
+
+| condition | result |
+|---|---|
+| with cookie bound by `newlogin.do` | `200`, real deauth |
+| without a bound cookie | `302 http://1.254.254.254?N=<epoch-ms>`, no deauth |
+
+To get a bound cookie while already online: `GET 1.254.254.254/login` → portal
+URL → `GET` it for a `JSESSIONID` → `POST newlogin.do` (usually answers
 “Session already running”) → `GET logout.do` with the cookie.
 
 ---
@@ -197,5 +256,8 @@ Base: `http://122.252.242.93/userportal/pages/usermedia/curaj/app/campus/ui/`
 7. `POST newlogin.do` with the five fields.
 8. On `redirect_to_nas` / “Session already running”, logout with the cookie
    and retry once.
-9. Verify with `generate_204` (poll ~6 × 1.5 s).
-10. Use `netloc`/`authority` (host **and** port), not just hostname.
+9. On “Maximum session allowed reached”, list `currentSessions.do`, let the
+   user choose one, and close it with a **POST** carrying the splash-context
+   cookie. Verify with a second list; do not trust a `302`.
+10. Verify with `generate_204` (poll ~6 × 1.5 s).
+11. Use `netloc`/`authority` (host **and** port), not just hostname.

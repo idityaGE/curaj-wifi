@@ -31,15 +31,17 @@ wins the route lookup and the portal looks unreachable (or a stale
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import os
 import re
+import shutil
 import socket
 import subprocess
 import sys
 import time
 import urllib.parse
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from http.client import HTTPConnection
 from pathlib import Path
 
@@ -51,6 +53,10 @@ DEFAULT_SSID = "CURAJ CAMPUS CONNECT"
 CHECK_URL = "http://connectivitycheck.gstatic.com/generate_204"
 CHECK_HOST = "connectivitycheck.gstatic.com"
 PORTAL_HOST = "122.252.242.93"
+SELF_CARE_LOGIN_PAGE = ("/userportal/pages/usermedia/curaj/app/campus/ui/"
+                        "login.jsp")
+SELF_CARE_LOGIN = "/userportal/newlogin.do"
+CURRENT_SESSIONS_PATH = "/userportal/currentSessions.do?from=Home"
 NAS_LOGOUT_URL = "http://1.254.254.254/logout"
 USER_AGENT = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36")
@@ -280,6 +286,252 @@ def _json(resp: HttpResponse) -> dict:
         return {}
 
 
+def is_session_limit(message: str) -> bool:
+    """The portal's wording is inconsistent, so match the stable phrases."""
+    text = message.lower()
+    return (
+        "maximum session" in text
+        or "session allowed reached" in text
+        or "session limit" in text
+        or "maximum of 2" in text
+        or "subscription allow" in text
+    )
+
+
+@dataclass
+class PortalSession:
+    """One row from /userportal/currentSessions.do?from=Home."""
+
+    sesno: str
+    name: str
+    account_id: str
+    rate_plan: str
+    net_id: str
+    start_time: str
+    duration: str
+    upload: str
+    download: str
+    total: str
+
+    def display(self) -> str:
+        return (f"{self.start_time}  {self.duration}  "
+                f"{self.total}  {self.name} ({self.account_id})")
+
+
+def _cookie_from(resp: HttpResponse) -> str | None:
+    for value in resp.header_all("Set-Cookie"):
+        if value.upper().startswith("JSESSIONID="):
+            return value.split(";", 1)[0]
+    return None
+
+
+def _clean_cell(raw: str) -> str:
+    text = re.sub(r"(?is)<[^>]+>", " ", raw)
+    text = html.unescape(text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def parse_sessions(page: str) -> list[PortalSession]:
+    """Parse the current-session table without an HTML parser dependency."""
+    sessions: list[PortalSession] = []
+    for row_match in re.finditer(r"(?is)<tr[^>]*>(.*?)</tr>", page):
+        row = row_match.group(1)
+        id_match = re.search(r"callClose\((\d+)\)", row)
+        if not id_match:
+            continue
+        cells = [_clean_cell(c) for c in
+                 re.findall(r"(?is)<td[^>]*>(.*?)</td>", row)]
+        if len(cells) < 9:
+            continue
+        cells += [""] * (9 - len(cells))
+        sessions.append(PortalSession(
+            sesno=id_match.group(1),
+            name=cells[0],
+            account_id=cells[1],
+            rate_plan=cells[2],
+            net_id=cells[3],
+            start_time=cells[4],
+            duration=cells[5],
+            upload=cells[6],
+            download=cells[7],
+            total=cells[8],
+        ))
+    return sessions
+
+
+def _portal_context_cookie(device: str, config: dict) -> str | None:
+    """Return a JSESSIONID bound to this client's portal context.
+
+    The self-care page on its own issues a cookie that can *list* sessions but
+    cannot *close* them: ``logout.do`` answers 302 to the NAS splash and the
+    session stays alive.  The cookie obtained from the portal splash URL (the
+    same first hop as the normal login) carries ip/mac/nas/sc context, and
+    that is what the portal checks before allowing a session close.
+    """
+    portal = portal_url_any(device)
+    if not portal or not trusted_portal(portal, config):
+        return None
+    try:
+        response = http_request(portal, device, timeout=8.0)
+    except OSError:
+        return None
+    return _cookie_from(response)
+
+
+def _self_care_cookie(device: str, config: dict) -> str | None:
+    """Open a portal *self-care* session.
+
+    `type=1` is the account-management login used by the self-care page.  It
+    is deliberately different from the internet login (`type=2`): it lets us
+    list sessions even when the account is already at its two-session limit,
+    and it does not create another internet session.
+
+    Authenticate on top of a context cookie whenever possible; without it the
+    portal only supports listing, not closing, a session.
+    """
+    base = f"http://{PORTAL_HOST}"
+    login_page = base + SELF_CARE_LOGIN_PAGE
+    cookie = _portal_context_cookie(device, config)
+    if not cookie:
+        # Fallback for listing when the NAS splash is unavailable.  Closing a
+        # session will fail verification with this cookie, which is safer than
+        # pretending the close worked.
+        try:
+            first = http_request(login_page, device, timeout=8.0)
+        except OSError:
+            return None
+        cookie = _cookie_from(first)
+        if not cookie:
+            return None
+
+    body = urllib.parse.urlencode({
+        "generatePassword": "true",
+        "phone": "0",
+        "type": "1",
+        "username": config["username"],
+        "password": config["password"],
+    }).encode()
+    headers = {
+        "Cookie": cookie,
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Referer": login_page,
+        "Origin": base,
+    }
+    second = http_request(base + SELF_CARE_LOGIN, device, method="POST",
+                          body=body, headers=headers, timeout=10.0)
+    return _cookie_from(second) or cookie
+
+
+def _fetch_sessions_page(device: str, cookie: str) -> HttpResponse:
+    return http_request(
+        f"http://{PORTAL_HOST}{CURRENT_SESSIONS_PATH}", device,
+        headers={
+            "Cookie": cookie,
+            "Referer": f"http://{PORTAL_HOST}/userportal/home.do?from=Home",
+        },
+        timeout=8.0,
+    )
+
+
+def _self_care_snapshot(device: str, config: dict
+                        ) -> tuple[bool, str | None, list[PortalSession], str]:
+    """Authenticate to self-care and return (ok, cookie, sessions, message)."""
+    try:
+        cookie = _self_care_cookie(device, config)
+    except OSError as exc:
+        return False, None, [], f"self-care login failed: {exc}"
+    if not cookie:
+        return False, None, [], "self-care login issued no JSESSIONID"
+
+    try:
+        page = _fetch_sessions_page(device, cookie)
+        if "session has been expired" in page.text.lower():
+            # The cookie can expire independently of the NAS session.
+            cookie = _self_care_cookie(device, config)
+            if not cookie:
+                return False, None, [], "self-care session expired"
+            page = _fetch_sessions_page(device, cookie)
+    except OSError as exc:
+        return False, None, [], f"session list failed: {exc}"
+
+    if "session has been expired" in page.text.lower():
+        return False, None, [], ("self-care login failed "
+                                 "(check the saved password)")
+    if not re.search(r"current session|items found", page.text, re.I):
+        snippet = re.sub(r"\s+", " ", page.text).strip()[:160]
+        return False, None, [], f"unexpected session page: {snippet}"
+
+    return True, cookie, parse_sessions(page.text), ""
+
+
+def list_sessions(device: str, config: dict
+                  ) -> tuple[bool, list[PortalSession], str]:
+    if not trusted_portal(f"http://{PORTAL_HOST}/userportal", config):
+        return False, [], f"untrusted portal host {PORTAL_HOST!r}"
+    ok, _cookie, sessions, message = _self_care_snapshot(device, config)
+    return ok, sessions, message
+
+
+def logout_session(device: str, config: dict, sesno: str
+                   ) -> tuple[bool, str]:
+    """Close one specific portal session, then confirm it disappeared."""
+    if not re.fullmatch(r"\d+", sesno):
+        return False, "session id must be numeric"
+    if not trusted_portal(f"http://{PORTAL_HOST}/userportal", config):
+        return False, f"untrusted portal host {PORTAL_HOST!r}"
+
+    ok, cookie, sessions, message = _self_care_snapshot(device, config)
+    if not ok or not cookie:
+        return False, message or "could not open self-care session"
+    if not any(s.sesno == sesno for s in sessions):
+        return False, f"session {sesno} is not active"
+
+    url = (f"http://{PORTAL_HOST}/userportal/logout.do"
+           f"?from=curses&sesno={sesno}")
+    try:
+        response = http_request(
+            url, device, method="POST", body=b"",
+            headers={
+                "Cookie": cookie,
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Referer": f"http://{PORTAL_HOST}{CURRENT_SESSIONS_PATH}",
+                "Origin": f"http://{PORTAL_HOST}",
+            },
+            timeout=8.0,
+        )
+    except OSError as exc:
+        return False, f"logout request failed: {exc}"
+
+    # The server normally answers 200 when it really closed the session.  An
+    # invalid/unauthorised id instead gets 302 to http://1.254.254.254?N=...
+    # and leaves the session alive, so verify against the live list.
+    for _ in range(4):
+        time.sleep(0.8)
+        try:
+            page = _fetch_sessions_page(device, cookie)
+        except OSError:
+            page = None
+
+        if page is not None:
+            lowered = page.text.lower()
+            if "session has been expired" not in lowered and re.search(
+                    r"current session|items found", page.text, re.I):
+                after = parse_sessions(page.text)
+                if all(s.sesno != sesno for s in after):
+                    return True, f"logged out session {sesno}"
+                continue
+
+        # The context/self-care cookie expired; open a fresh one and re-check.
+        ok2, cookie2, after, _message2 = _self_care_snapshot(device, config)
+        if ok2 and all(s.sesno != sesno for s in after):
+            return True, f"logged out session {sesno}"
+        if ok2 and cookie2:
+            cookie = cookie2
+
+    return False, (f"portal did not close session {sesno} "
+                   f"(HTTP {response.status})")
+
+
 def login(config: dict, device: str, *, verbose: bool = True,
           force: bool = False, _depth: int = 0) -> tuple[bool, str]:
     """Run the whole pre-auth -> portal -> newlogin.do flow."""
@@ -371,6 +623,14 @@ def login(config: dict, device: str, *, verbose: bool = True,
     ok = (data.get("errorKey") == "success"
           or data.get("errorMessage") == "success_net")
 
+    # The account is limited to two simultaneous internet sessions.  Do not
+    # auto-kick anything: the user must choose a session to close.
+    portal_message = " ".join(str(data.get(k, "")) for k in
+                              ("errorMessage", "errorKey")) + " " + resp.text[:300]
+    if not ok and is_session_limit(portal_message):
+        log("portal session limit reached")
+        return False, "session limit reached (2 active)"
+
     # "redirect_to_nas" / "Session already running" mean the NAS still holds a
     # half-session (or the request lost the sc context).  Kill the portal
     # session with our cookie, then the NAS one, and retry exactly once.
@@ -422,7 +682,8 @@ def portal_url_any(device: str) -> str | None:
     except OSError:
         pass
 
-    for splash in ("http://1.254.254.254/", "http://1.254.254.254/login"):
+    # /login is the reliable splash hop; / sometimes blackholes while online.
+    for splash in ("http://1.254.254.254/login", "http://1.254.254.254/"):
         try:
             found = find_portal(http_request(splash, device, timeout=6.0),
                                 device)
@@ -575,6 +836,8 @@ def cmd_once(cfg: dict, args) -> int:
         return 2
     ok, msg = login(cfg, dev, verbose=True, force=args.force)
     print(("OK: " if ok else "FAIL: ") + msg)
+    if not ok and is_session_limit(msg):
+        print("Run: curaj-login sessions")
     return 0 if ok else 1
 
 
@@ -588,11 +851,76 @@ def cmd_logout(cfg: dict, args) -> int:
     return 0 if ok else 1
 
 
+def cmd_sessions(cfg: dict, args) -> int:
+    dev = resolve_device(cfg, args.interface)
+    if not dev:
+        print(f"not connected to '{cfg.get('ssid', DEFAULT_SSID)}'")
+        return 2
+
+    if args.logout:
+        ok, msg = logout_session(dev, cfg, args.logout)
+        print(("logged out: " if ok else "FAIL: ") + msg)
+        if not ok:
+            return 1
+
+        if not args.no_login:
+            try:
+                blocked = probe(dev).status != 204
+            except OSError:
+                blocked = False
+            if blocked:
+                print("[curaj-login] retrying normal login", flush=True)
+                ok2, msg2 = login(cfg, dev, verbose=True)
+                print(("OK: " if ok2 else "FAIL: ") + msg2)
+                return 0 if ok2 else 1
+        return 0
+
+    ok, sessions, msg = list_sessions(dev, cfg)
+    if not ok:
+        print("FAIL: " + msg)
+        return 1
+
+    if args.json:
+        print(json.dumps([asdict(s) for s in sessions], indent=2))
+        return 0
+
+    if not sessions:
+        print("no active sessions")
+        return 0
+
+    print(f"{'ID':<12} {'STARTED':<20} {'DURATION':<10} "
+          f"{'TOTAL':<10} ACCOUNT")
+    for s in sessions:
+        print(f"{s.sesno:<12} {s.start_time:<20} {s.duration:<10} "
+              f"{s.total:<10} {s.account_id}")
+    print("\nLog out one: curaj-login sessions --logout <ID>")
+    return 0
+
+
+def notify_session_limit(sessions: list[PortalSession]) -> None:
+    """Best-effort desktop notification; the journal line is the fallback."""
+    ids = ", ".join(s.sesno for s in sessions) or "unknown"
+    title = "CURAJ: session limit reached"
+    body = (f"Active sessions: {ids}. "
+            f"Run: curaj-login sessions --logout <ID>")
+    if shutil.which("notify-send"):
+        try:
+            subprocess.run(
+                ["notify-send", "-a", "curaj-login", "-u", "normal",
+                 title, body],
+                timeout=3,
+                check=False,
+            )
+        except Exception:
+            pass
+
+
 def cmd_watch(cfg: dict, args) -> int:
     ssid = cfg.get("ssid", DEFAULT_SSID)
     online_sleep = int(cfg.get("poll_online", 60))
     retry_sleep = int(cfg.get("poll_retry", 20))
     failures = 0
+    limit_notified = False
 
     print(f"[curaj-login] watching for '{ssid}'", flush=True)
 
@@ -608,6 +936,7 @@ def cmd_watch(cfg: dict, args) -> int:
                 if failures:
                     print(f"[curaj-login] online again via {dev}", flush=True)
                 failures = 0
+                limit_notified = False
                 time.sleep(online_sleep)
                 continue
 
@@ -619,8 +948,27 @@ def cmd_watch(cfg: dict, args) -> int:
 
             if ok:
                 failures = 0
+                limit_notified = False
                 time.sleep(online_sleep)
+            elif is_session_limit(msg):
+                if not limit_notified:
+                    ok_s, sessions, err = list_sessions(dev, cfg)
+                    if ok_s:
+                        print("[curaj-login] active portal sessions:",
+                              flush=True)
+                        for s in sessions:
+                            print(f"[curaj-login]   {s.sesno}  "
+                                  f"{s.start_time}  {s.duration}  "
+                                  f"{s.total}", flush=True)
+                        notify_session_limit(sessions)
+                    else:
+                        print(f"[curaj-login] could not list sessions: {err}",
+                              flush=True)
+                    limit_notified = True
+                failures += 1
+                time.sleep(min(retry_sleep * failures, 300))
             else:
+                limit_notified = False
                 failures += 1
                 time.sleep(min(retry_sleep * failures, 300))
         except KeyboardInterrupt:
@@ -645,6 +993,14 @@ def main() -> int:
                         help="POST even if the connection already works")
     sub.add_parser("watch", help="stay running and re-login forever")
     sub.add_parser("logout", help="log the current device out")
+    p_sessions = sub.add_parser(
+        "sessions", help="list active portal sessions or close one")
+    p_sessions.add_argument("--json", action="store_true",
+                            help="print the session list as JSON")
+    p_sessions.add_argument("--logout", metavar="ID",
+                            help="close the session with this ID")
+    p_sessions.add_argument("--no-login", action="store_true",
+                            help="do not retry login after --logout")
 
     args = ap.parse_args()
 
@@ -662,6 +1018,7 @@ def main() -> int:
         "once": cmd_once,
         "watch": cmd_watch,
         "logout": cmd_logout,
+        "sessions": cmd_sessions,
     }[args.cmd](cfg, args)
 
 

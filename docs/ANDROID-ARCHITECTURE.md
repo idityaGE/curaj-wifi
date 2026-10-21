@@ -22,15 +22,15 @@ Companion documents:
 | item | value |
 |---|---|
 | application id | `in.ac.curaj.autologin` |
-| version | **1.3** (versionCode **4**) |
+| version | **1.4** (versionCode **5**) |
 | language | Kotlin |
 | minimum SDK | 26 (Android 8.0) |
 | target / compile SDK | 35 (Android 15) |
 | build | Gradle 8.9 wrapper, AGP 8.7.3, Kotlin 2.0.21, JDK 17 |
 | debug APK | `android/app/build/outputs/apk/debug/app-debug.apk` |
-| production APK | `dist/CURAJ-AutoLogin-1.3.apk` (release-signed) |
-| debug SHA-256 | `879d23fb068e2a9c5d401974f9460cb169ab2a4bec3c583cc32313ce3ae5a6dd` |
-| production SHA-256 | `9a06fe5208d32b62e20f3d0489c8e2104c921e6115cae30a4eaa746e4de8dd66` |
+| production APK | `dist/CURAJ-AutoLogin-1.4.apk` (release-signed) |
+| debug SHA-256 | `eb9a884cb57280f90c000fad308844cf755d9ab09387c37fda56fa4509bf21cd` |
+| production SHA-256 | `58883579c95cb55b15c5fd10a09209e1c607125f4ce78b1bcdef0c3eba4b7eb8` |
 | tested device | OnePlus CPH2793, Android 16 |
 | campus Wi-Fi | `CURAJ CAMPUS CONNECT`, `wlan0`, `10.50.13.252/20` |
 | portal | `http://122.252.242.93/userportal` |
@@ -55,6 +55,8 @@ restore the session without the user opening a browser**.
    disconnected — not a stream of “signing in” / “waiting” messages.
 7. Provide a real logout that turns auto-login off, so the service does not
    immediately sign back in.
+8. When the account’s two-session limit is reached, list the active sessions
+   and let the user close one; never kick another device automatically.
 
 ### Non-goals
 
@@ -398,6 +400,42 @@ In that case the app:
 
 This clears the half-session without an unbounded retry loop.
 
+### 6.5 Two-session limit and session management
+
+The account allows two simultaneous internet sessions. When both are in use,
+`newlogin.do` returns:
+
+```json
+{"errorKey":"failureCase","errorMessage":"Maximum session allowed reached. your subscription allow a maximum of 2 sessiosn"}
+```
+
+`PortalClient.login()` surfaces this as `Result(sessionLimit = true)`. The
+service records `Session limit reached`, updates the foreground notification,
+and posts one separate high-priority notification with a **Manage sessions**
+action. The foreground notification remains low-priority and silent.
+
+The **Sessions** button (and the notification action) runs:
+
+```text
+findPortalForContext()
+  -> GET splash URL                    (context JSESSIONID)
+  -> POST newlogin.do  type=1          (self-care, no third slot)
+  -> GET currentSessions.do            (parse callClose ids)
+  -> POST logout.do?from=curses&sesno  (context cookie, empty body)
+  -> GET currentSessions.do            (verify the id is gone)
+```
+
+The context cookie is essential. A cookie from a direct `login.jsp` load can
+list sessions, but `logout.do` returns `302 http://1.254.254.254?N=...` and the
+session survives. Only the splash-context cookie gets the real `200` and
+“Your Session Has Been Stopped” page. The app therefore verifies against a
+second list and reports failure rather than trusting the `302`.
+
+The dialog shows each session’s start time, duration, total bytes, name, and
+account id. It asks for confirmation, closes only the selected id, then starts
+a normal login attempt if auto-login is enabled. It never selects a session on
+its own.
+
 ---
 
 ## 7. Notification state machine
@@ -411,6 +449,7 @@ The foreground notification is a **state display**, not a progress log.
 | baseline | `Auto-login is on` | service is running and is not in a terminal state |
 | no credentials | `Set your mobile number and password in the app` | service started without saved credentials |
 | connected | `Connected - internet is working` | login verified with `204` |
+| session limit | `Session limit reached - log out one session` | portal reports two active sessions |
 | failed | `Sign-in failed: <reason>` | a hard failure, after transient retries are exhausted |
 | disconnected | `Disconnected from campus Wi-Fi` | Wi-Fi lost or no Wi-Fi at a poll |
 
@@ -429,6 +468,8 @@ and uses `BigTextStyle` so a long failure reason is readable when expanded.
 ### Actions
 
 * **Login now** — one forced attempt, bypassing cooldown/backoff.
+* **Manage sessions** — appears in the session-limit notification and the
+  foreground notification while the limit is active; opens the session chooser.
 * **Pause** — sets the enabled flag off, removes the notification, stops the
   service. Use the app to re-enable.
 * Tapping the notification opens `MainActivity`, which shows the last result
@@ -728,6 +769,7 @@ Approximate evolution from the build/test notes:
 | 1.1 | 2 | host pinning, stale-session recovery, notification actions |
 | 1.2 | 3 | fixed pre-login DNS failure with fixed probe IPs; cleartext allowlist; live-test fixes |
 | 1.3 | 4 | duplicate-auth handling, transient retries, state-only notifications, logout button and real logout |
+| 1.4 | 5 | two-session limit detection, session list/logout with splash-context cookie, Manage sessions notification and retry |
 
 ---
 
@@ -740,7 +782,9 @@ Approximate evolution from the build/test notes:
   redirect, and raw URLs. A JS-only page that never exposes the URL would need
   a WebView fallback.
 * **Portal vendor/protocol change** — re-check `newlogin.do`, the success
-  fields, and the logout cookie binding against live traffic.
+  fields, the `currentSessions.do` table, and the logout cookie binding against
+  live traffic. The close path needs the splash-context cookie, not just a
+  self-care cookie.
 * **MAC randomisation** — the portal sees a new device per random MAC. Login
   still works, but stale-session behaviour can differ. Set “Use device MAC” for
   this SSID if it becomes noisy.
@@ -760,6 +804,8 @@ Approximate evolution from the build/test notes:
 | `portal is already authenticating this IP; waiting` | system/app race | wait; app polls and retries without a second login |
 | `portal is still authenticating; retrying` | transient state | bounded retries follow; no failure notification yet |
 | `rejected: …` | credentials or portal state | fix credentials; check portal manually |
+| `session limit reached (2 active)` | both account slots are in use | tap **Manage sessions**, close one, let auto-login retry |
+| `portal did not close session … (HTTP 302)` | close used the wrong context cookie, or the id changed | refresh the list; the client will never report a `302` as success |
 | `could not verify logout` | probe never observed a non-204 response | auto-login stays off; check Wi-Fi/portal manually |
 | notification says `Connected` but browser fails | stale success or route issue | check with `curl --interface wlan0`; next poll re-verifies |
 

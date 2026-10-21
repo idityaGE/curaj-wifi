@@ -328,6 +328,48 @@ Step 4 is counter-intuitive but necessary: it is the call that associates the
 fresh `JSESSIONID` with the NAS-side session, so step 5 has something to tear
 down.
 
+### 6.1 Closing one of two sessions
+
+`GET /userportal/currentSessions.do?from=Home` lists the active sessions and
+puts `callClose(<sesno>)` on each row. The browser’s **Close** button submits an
+empty **POST**:
+
+```http
+POST /userportal/logout.do?from=curses&sesno=<sesno>
+Cookie: JSESSIONID=<splash-context>
+Content-Type: application/x-www-form-urlencoded
+Referer: http://122.252.242.93/userportal/currentSessions.do?from=Home
+Origin: http://122.252.242.93
+Content-Length: 0
+```
+
+The cookie matters. A self-care login started directly at `login.jsp` yields a
+cookie that can list sessions, but the same close request returns:
+
+```http
+HTTP/1.1 302 Found
+Location: http://1.254.254.254?N=<epoch-ms>
+```
+
+and the session survives. The browser works because its `JSESSIONID` came from
+the portal splash URL, which binds `ip`/`mac`/`nas`/`sc`. With that context
+cookie the close returns `200`, the page says “Your Session Has Been Stopped”,
+and the next `currentSessions.do` no longer contains the id.
+
+So the session-management flow is:
+
+```
+1. GET  splash URL (portal URL from 1.254.254.254/login if online)
+2. keep the context JSESSIONID
+3. POST newlogin.do  type=1  (self-care; lists but does not consume a slot)
+4. GET  currentSessions.do   (parse callClose ids)
+5. POST logout.do?from=curses&sesno=<id>   (empty body, context cookie)
+6. GET  currentSessions.do   (verify the id is gone)
+```
+
+Do not treat the `302` as success; both an invalid id and an unauthorised
+cookie produce it.
+
 ---
 
 ## 7. The `sc` token
@@ -474,7 +516,9 @@ Base: `http://122.252.242.93/userportal`
 | `GET` | `/?requesturi=...&ip=...&mac=...&nas=curaj&sc=...&interface=cpeth3&locationid=...` | create session, return auto-post page + `JSESSIONID` |
 | `POST` | `/login.do?requesturi=<urlencoded>` | browser parity; returns JS redirect to the SPA |
 | `POST` | `/newlogin.do` | credential check; the real login |
-| `GET` | `/logout.do` | real logout **with** `Cookie: JSESSIONID=...` |
+| `GET` | `/logout.do` | real logout of this device **with** the cookie bound by `newlogin.do` |
+| `GET` | `/currentSessions.do?from=Home` | list active sessions; each row has `callClose(<sesno>)` |
+| `POST` | `/logout.do?from=curses&sesno=<id>` | close one chosen session; needs the **splash-context** cookie, empty body |
 | `GET` | `/pages/usermedia/curaj/app/campus/ui/index.html` | SPA home |
 | `GET` | `/pages/usermedia/curaj/app/campus/ui/campus-flow.html` | login-type chooser |
 | `GET` | `/pages/usermedia/curaj/app/campus/ui/login.html` | the form |
@@ -503,6 +547,7 @@ Responses:
 {"errorKey":"success","errorMessage":"success_net"}
 {"errorKey":"redirect_to_nas"}
 {"errorKey":"failureCase","errorMessage":"Session already running"}
+{"errorKey":"failureCase","errorMessage":"Maximum session allowed reached. your subscription allow a maximum of 2 sessiosn"}
 ```
 
 ### 10.4 Redirect parameters
@@ -550,7 +595,9 @@ Responses:
 3. **No CSRF token / no nonce.**
    The form relies solely on the `JSESSIONID`; `sc` is a device token, not a
    CSRF defence.
-4. **`logout.do` is a state-changing GET.**
+4. **`logout.do` is state-changing.** Logging out this device uses a GET with
+   the bound cookie; closing one chosen session uses a POST with the
+   splash-context cookie.
 5. **`sc` is stable and long-lived.**
    It is not a one-time nonce; it identifies the device for an extended
    period. It is not sufficient on its own to log in (credentials are still

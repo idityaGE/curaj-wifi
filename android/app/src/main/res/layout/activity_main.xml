@@ -82,6 +82,13 @@
             android:layout_marginTop="4dp"
             android:text="Log out and stop auto-login" />
 
+        <Button
+            android:id="@+id/sessions"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="Manage portal sessions" />
+
         <TextView
             android:id="@+id/status"
             android:layout_width="match_parent"

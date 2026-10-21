@@ -46,6 +46,8 @@ class AutoLoginService : Service() {
     private var backoffUntil = 0L
     private var transientRetries = 0
     private var lastNotificationText: String? = null
+    private var lastLimit = false
+    private var limitNotified = false
 
     override fun onCreate() {
         super.onCreate()
@@ -99,6 +101,7 @@ class AutoLoginService : Service() {
             ACTION_PAUSE -> {
                 Prefs.setEnabled(this, false)
                 Prefs.record(this, "Paused by you")
+                cancelLimitNotification()
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
                 return START_NOT_STICKY
@@ -125,6 +128,7 @@ class AutoLoginService : Service() {
                 transientRetries = 0
                 backoffUntil = 0L
                 lastAttempt = 0L
+                limitNotified = false
             }
             if (!force && now < backoffUntil) return
             if (!force && now - lastAttempt < COOLDOWN_MS) return
@@ -147,6 +151,7 @@ class AutoLoginService : Service() {
                 if (result.ok) {
                     transientRetries = 0
                     noteSuccess()
+                    cancelLimitNotification()
                     val text = if (result.message == "already online") {
                         "Online (already signed in)"
                     } else {
@@ -154,6 +159,11 @@ class AutoLoginService : Service() {
                     }
                     Prefs.record(this@AutoLoginService, text)
                     update(TEXT_CONNECTED)
+                } else if (result.sessionLimit) {
+                    transientRetries = 0
+                    noteFailure()
+                    Prefs.record(this@AutoLoginService, TEXT_SESSION_LIMIT)
+                    update(TEXT_SESSION_LIMIT, limit = true)
                 } else if (result.retryMs > 0 && allowTransientRetry()) {
                     // The portal is still authenticating this IP. Check again
                     // shortly; do not show a false failure in between.
@@ -226,25 +236,42 @@ class AutoLoginService : Service() {
 
     private fun createChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val nm = getSystemService(NotificationManager::class.java)
             val ch = NotificationChannel(
                 CHANNEL, "Campus auto-login", NotificationManager.IMPORTANCE_LOW
             )
             ch.setShowBadge(false)
             ch.setSound(null, null)
-            getSystemService(NotificationManager::class.java)
-                .createNotificationChannel(ch)
+            nm.createNotificationChannel(ch)
+
+            // The limit notification is actionable, so it is allowed to make
+            // a sound once. It is separate from the silent foreground state.
+            val limit = NotificationChannel(
+                CHANNEL_LIMIT, "Session limit",
+                NotificationManager.IMPORTANCE_DEFAULT
+            )
+            limit.setShowBadge(true)
+            limit.enableVibration(true)
+            nm.createNotificationChannel(limit)
         }
     }
 
-    private fun notification(text: String): Notification {
+    private fun notification(text: String, limit: Boolean = false): Notification {
+        val openIntent = Intent(this, MainActivity::class.java)
+        if (limit) openIntent.putExtra(MainActivity.EXTRA_MANAGE_SESSIONS, true)
         val open = PendingIntent.getActivity(
-            this, 0,
-            Intent(this, MainActivity::class.java),
+            this, if (limit) 4 else 0, openIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         val loginNow = PendingIntent.getService(
             this, 1,
             Intent(this, AutoLoginService::class.java).setAction(ACTION_LOGIN_NOW),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val manage = PendingIntent.getActivity(
+            this, 3,
+            Intent(this, MainActivity::class.java)
+                .putExtra(MainActivity.EXTRA_MANAGE_SESSIONS, true),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         val pause = PendingIntent.getService(
@@ -253,7 +280,7 @@ class AutoLoginService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        return NotificationCompat.Builder(this, CHANNEL)
+        val builder = NotificationCompat.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_stat_wifi)
             .setContentTitle("CURAJ Auto Login")
             .setContentText(text)
@@ -263,13 +290,53 @@ class AutoLoginService : Service() {
             .setOnlyAlertOnce(true)
             .setSilent(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
-            .addAction(
+
+        if (limit) {
+            builder.addAction(
+                R.drawable.ic_sync, "Manage sessions", manage
+            )
+        } else {
+            builder.addAction(
                 R.drawable.ic_sync, "Login now", loginNow
             )
-            .addAction(
-                R.drawable.ic_pause, "Pause", pause
+        }
+        builder.addAction(R.drawable.ic_pause, "Pause", pause)
+        return builder.build()
+    }
+
+    private fun postLimitNotification() {
+        if (limitNotified) return
+        limitNotified = true
+        val manage = PendingIntent.getActivity(
+            this, 3,
+            Intent(this, MainActivity::class.java)
+                .putExtra(MainActivity.EXTRA_MANAGE_SESSIONS, true),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val notification = NotificationCompat.Builder(this, CHANNEL_LIMIT)
+            .setSmallIcon(R.drawable.ic_stat_wifi)
+            .setContentTitle("Session limit reached")
+            .setContentText("2 sessions are active. Log out one to reconnect.")
+            .setStyle(
+                NotificationCompat.BigTextStyle().bigText(
+                    "The CURAJ portal allows two active sessions. " +
+                        "Tap Manage sessions to log out one device, then " +
+                        "the app will try to connect again."
+                )
             )
+            .setContentIntent(manage)
+            .setAutoCancel(true)
+            .setOnlyAlertOnce(true)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .addAction(R.drawable.ic_sync, "Manage sessions", manage)
             .build()
+        getSystemService(NotificationManager::class.java)
+            .notify(NOTIF_LIMIT_ID, notification)
+    }
+
+    private fun cancelLimitNotification() {
+        limitNotified = false
+        getSystemService(NotificationManager::class.java).cancel(NOTIF_LIMIT_ID)
     }
 
     private fun initialText(): String {
@@ -278,6 +345,7 @@ class AutoLoginService : Service() {
         val last = Prefs.lastResult(this)
         return when {
             last.startsWith("Online") -> TEXT_CONNECTED
+            last.startsWith("Session limit") -> TEXT_SESSION_LIMIT
             last.startsWith("Sign-in failed") || last.startsWith("Sign-in error") -> last
             else -> TEXT_RUNNING
         }
@@ -288,13 +356,19 @@ class AutoLoginService : Service() {
      * disconnected. "Signing in", "waiting for Wi-Fi" and similar transitions
      * are deliberately not posted. Identical states are not re-notified.
      */
-    private fun update(text: String) {
+    private fun update(text: String, limit: Boolean = false) {
         synchronized(this) {
-            if (text == lastNotificationText) return
+            if (text == lastNotificationText && limit == lastLimit) return
             lastNotificationText = text
+            lastLimit = limit
         }
         getSystemService(NotificationManager::class.java)
-            .notify(NOTIF_ID, notification(text))
+            .notify(NOTIF_ID, notification(text, limit))
+        if (limit) {
+            postLimitNotification()
+        } else {
+            cancelLimitNotification()
+        }
     }
 
     override fun onDestroy() {
@@ -308,7 +382,9 @@ class AutoLoginService : Service() {
     companion object {
         private const val TAG = "AutoLoginService"
         private const val CHANNEL = "auto_login"
+        private const val CHANNEL_LIMIT = "session_limit"
         private const val NOTIF_ID = 41
+        private const val NOTIF_LIMIT_ID = 42
         private const val POLL_MS = 60_000L
         private const val COOLDOWN_MS = 20_000L
 
@@ -317,6 +393,8 @@ class AutoLoginService : Service() {
         private const val TEXT_DISCONNECTED = "Disconnected from campus Wi-Fi"
         private const val TEXT_NO_CREDENTIALS =
             "Set your mobile number and password in the app"
+        private const val TEXT_SESSION_LIMIT =
+            "Session limit reached - log out one session"
 
         const val ACTION_LOGIN_NOW = "in.ac.curaj.autologin.LOGIN_NOW"
         const val ACTION_PAUSE = "in.ac.curaj.autologin.PAUSE"
