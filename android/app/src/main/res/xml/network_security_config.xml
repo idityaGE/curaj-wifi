@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- Default: HTTPS only. -->
+    <base-config cleartextTrafficPermitted="false" />
+
+    <!-- The captive portal is plain HTTP (that is a portal problem, not ours). -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">122.252.242.93</domain>
+        <domain includeSubdomains="false">1.254.254.254</domain>
+        <domain includeSubdomains="false">10.50.0.1</domain>
+        <domain includeSubdomains="false">connectivitycheck.gstatic.com</domain>
+        <domain includeSubdomains="false">142.251.150.120</domain>
+        <domain includeSubdomains="false">142.250.183.36</domain>
+        <domain includeSubdomains="false">142.250.72.196</domain>
+        <domain includeSubdomains="false">142.251.32.14</domain>
+    </domain-config>
+</network-security-config>

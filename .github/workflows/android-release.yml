@@ -1,0 +1,77 @@
+name: Android release APK
+
+on:
+  push:
+    tags: [ 'v*' ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Write release signing material
+        env:
+          KEYSTORE_BASE64: ${{ secrets.CURAJ_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.CURAJ_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.CURAJ_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.CURAJ_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$KEYSTORE_BASE64"
+          test -n "$STORE_PASSWORD"
+          test -n "$KEY_ALIAS"
+          test -n "$KEY_PASSWORD"
+          mkdir -p "$RUNNER_TEMP/signing"
+          printf '%s' "$KEYSTORE_BASE64" | base64 -d \
+            > "$RUNNER_TEMP/signing/curaj-release.jks"
+          cat > "$RUNNER_TEMP/signing/release-signing.properties" <<EOF
+          storeFile=$RUNNER_TEMP/signing/curaj-release.jks
+          storePassword=$STORE_PASSWORD
+          keyAlias=$KEY_ALIAS
+          keyPassword=$KEY_PASSWORD
+          EOF
+          chmod 600 "$RUNNER_TEMP/signing/curaj-release.jks" \
+            "$RUNNER_TEMP/signing/release-signing.properties"
+          echo "CURAJ_SIGNING_PROPERTIES=$RUNNER_TEMP/signing/release-signing.properties" \
+            >> "$GITHUB_ENV"
+
+      - name: Build signed release
+        run: |
+          set -euo pipefail
+          cd android
+          ./gradlew assembleRelease --no-daemon --stacktrace
+          test -f app/build/outputs/apk/release/app-release.apk
+
+      - name: Name APK and checksum
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp android/app/build/outputs/apk/release/app-release.apk \
+            "dist/CURAJ-AutoLogin-${GITHUB_REF_NAME}.apk"
+          (cd dist && sha256sum *.apk > SHA256SUMS.txt)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: curaj-autologin-release
+          path: dist/*
+
+      - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: dist/*

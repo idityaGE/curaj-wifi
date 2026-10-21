@@ -1,0 +1,14 @@
+[Unit]
+Description=CURAJ CAMPUS CONNECT auto-login
+After=network.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/curaj-login watch
+Restart=always
+RestartSec=20
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target

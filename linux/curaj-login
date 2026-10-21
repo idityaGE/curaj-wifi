@@ -1,0 +1,669 @@
+#!/usr/bin/env python3
+"""
+curaj-login - automatic login for "CURAJ CAMPUS CONNECT"
+
+Reverse-engineered flow (Inventum / RailWire captive portal):
+
+  1. Any pre-auth HTTP request is intercepted by the gateway (Squid :3128)
+     and answered with a "Please wait..." page whose meta-refresh points at
+
+         http://122.252.242.93/userportal/?requesturi=...&ip=<client-ip>
+              &mac=<client-mac>&nas=curaj&requestip=...&sc=<md5-token>
+              &interface=cpeth3&locationid=<ap-name>
+
+  2. GET that URL with a cookie jar -> 200 + JSESSIONID (the session now
+     holds ip/mac/nas/sc context) and a tiny page that auto-POSTs login.do.
+
+  3. POST /userportal/newlogin.do  (same JSESSIONID)
+
+         username=<mobile>&password=<pw>&phone=0&type=2&jsonresponse=1
+
+     -> {"errorKey":"success","errorMessage":"success_net"} on success.
+
+  4. The NAS authorises the MAC/IP and normal traffic starts flowing.
+
+Every socket in this client is bound to the Wi-Fi device with
+SO_BINDTODEVICE.  Without that, a tethered phone / second default route
+wins the route lookup and the portal looks unreachable (or a stale
+"online" check gives a false positive).
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import socket
+import subprocess
+import sys
+import time
+import urllib.parse
+from dataclasses import dataclass, field
+from http.client import HTTPConnection
+from pathlib import Path
+
+# --------------------------------------------------------------------------
+# constants / defaults
+# --------------------------------------------------------------------------
+
+DEFAULT_SSID = "CURAJ CAMPUS CONNECT"
+CHECK_URL = "http://connectivitycheck.gstatic.com/generate_204"
+CHECK_HOST = "connectivitycheck.gstatic.com"
+PORTAL_HOST = "122.252.242.93"
+NAS_LOGOUT_URL = "http://1.254.254.254/logout"
+USER_AGENT = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36")
+
+CONFIG_PATH = Path(os.environ.get("CURAJ_CONFIG",
+                                  "~/.config/curaj-wifi/config.json")).expanduser()
+
+PORTAL_URL_RE = re.compile(
+    r"https?://[^\s\"'<>]+/userportal/\?[^\s\"'<>]+", re.I)
+META_URL_RE = re.compile(r"(?i)URL=([^\"'>\s]+)")
+JS_URL_RE = re.compile(r"""(?i)(?:window\.)?location(?:\.href)?\s*=\s*["']([^"']+)["']""")
+
+# --------------------------------------------------------------------------
+# HTTP over a device-bound socket
+# --------------------------------------------------------------------------
+
+
+class DeviceHTTPConnection(HTTPConnection):
+    """HTTPConnection whose TCP socket is pinned to one network interface."""
+
+    def __init__(self, host: str, port: int | None = None,
+                 device: str | None = None, timeout: float = 8.0):
+        super().__init__(host, port, timeout=timeout)
+        self.device = device
+
+    def connect(self) -> None:
+        infos = socket.getaddrinfo(self.host, self.port,
+                                   socket.AF_INET, socket.SOCK_STREAM)
+        last: Exception | None = None
+        for family, socktype, proto, _canon, sockaddr in infos:
+            s = socket.socket(family, socktype, proto)
+            try:
+                if self.device:
+                    s.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE,
+                                 self.device.encode())
+                s.settimeout(self.timeout)
+                s.connect(sockaddr)
+            except Exception as exc:          # try the next address
+                last = exc
+                s.close()
+                continue
+            self.sock = s
+            return
+        raise OSError(f"cannot connect to {self.host}:{self.port} "
+                      f"via {self.device or 'any'}: {last}")
+
+
+@dataclass
+class HttpResponse:
+    status: int
+    headers: list[tuple[str, str]]
+    body: bytes
+    url: str
+
+    def header(self, name: str) -> str | None:
+        name = name.lower()
+        for k, v in self.headers:
+            if k.lower() == name:
+                return v
+        return None
+
+    def header_all(self, name: str) -> list[str]:
+        name = name.lower()
+        return [v for k, v in self.headers if k.lower() == name]
+
+    @property
+    def text(self) -> str:
+        return self.body.decode("utf-8", "replace")
+
+
+def http_request(url: str, device: str | None, *, method: str = "GET",
+                 body: bytes | None = None,
+                 headers: dict[str, str] | None = None,
+                 timeout: float = 8.0,
+                 max_body: int = 1 << 20) -> HttpResponse:
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme != "http":
+        raise ValueError(f"only http:// is supported for the portal: {url}")
+
+    conn = DeviceHTTPConnection(parts.hostname or "",
+                                parts.port or 80, device, timeout)
+    path = parts.path or "/"
+    if parts.query:
+        path += "?" + parts.query
+
+    hdrs = {
+        "Host": parts.netloc,
+        "User-Agent": USER_AGENT,
+        "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Connection": "close",
+    }
+    if headers:
+        hdrs.update(headers)
+
+    try:
+        conn.request(method, path, body=body, headers=hdrs)
+        resp = conn.getresponse()
+        data = resp.read(max_body)
+        return HttpResponse(resp.status, list(resp.getheaders()), data, url)
+    finally:
+        conn.close()
+
+
+# --------------------------------------------------------------------------
+# interface / SSID discovery
+# --------------------------------------------------------------------------
+
+
+def _run(cmd: list[str]) -> str:
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True,
+                              timeout=5).stdout
+    except Exception:
+        return ""
+
+
+def iface_for_ssid(ssid: str) -> str | None:
+    """Return the wireless interface currently associated with `ssid`."""
+    # nmcli: DEVICE:TYPE:STATE  +  GENERAL.CONNECTION
+    for line in _run(["nmcli", "-t", "-f", "DEVICE,TYPE,STATE",
+                      "device"]).splitlines():
+        bits = line.split(":")
+        if len(bits) < 3:
+            continue
+        dev, typ, state = bits[0], bits[1], bits[2]
+        if typ != "wifi" or not state.startswith("connected"):
+            continue
+        info = _run(["nmcli", "-t", "-f", "GENERAL.CONNECTION",
+                     "device", "show", dev])
+        name = info.split(":", 1)[1].strip() if ":" in info else ""
+        if name == ssid:
+            return dev
+
+    # fallback: iw
+    for dev in os.listdir("/sys/class/net"):
+        if not os.path.isdir(f"/sys/class/net/{dev}/wireless"):
+            continue
+        link = _run(["iw", "dev", dev, "link"])
+        m = re.search(r"^SSID:\s*(.+)$", link, re.M)
+        if m and m.group(1).strip() == ssid:
+            return dev
+    return None
+
+
+# --------------------------------------------------------------------------
+# portal discovery / login
+# --------------------------------------------------------------------------
+
+
+def probe(device: str | None) -> HttpResponse:
+    """204 = authenticated, anything else = intercepted/blocked.
+
+    One retry absorbs the short blackhole while the NAS tears a session down.
+    """
+    last: OSError | None = None
+    for _ in range(2):
+        try:
+            return http_request(CHECK_URL, device,
+                                headers={"Host": CHECK_HOST}, timeout=6.0)
+        except OSError as exc:
+            last = exc
+            time.sleep(0.5)
+    raise last  # type: ignore[misc]
+
+
+def find_portal(resp: HttpResponse, device: str | None) -> str | None:
+    """Pull the userportal URL out of a redirect / meta-refresh / JS page."""
+    candidates: list[str] = []
+
+    loc = resp.header("Location")
+    if loc:
+        candidates.append(urllib.parse.urljoin(resp.url, loc))
+
+    text = resp.text
+    for rx in (META_URL_RE, JS_URL_RE):
+        for m in rx.finditer(text):
+            candidates.append(urllib.parse.urljoin(resp.url, m.group(1)))
+
+    candidates.extend(m.group(0) for m in PORTAL_URL_RE.finditer(text))
+
+    for url in candidates:
+        url = url.replace(" ", "%20")
+        if "/userportal" not in url and "1.254.254.254" not in url:
+            continue
+
+        # 1.254.254.254 is the NAS splash: it re-redirects to the real portal
+        if urllib.parse.urlsplit(url).hostname == "1.254.254.254":
+            try:
+                hop = http_request(url, device, timeout=6.0)
+                deeper = find_portal(hop, device)
+                if deeper and "1.254.254.254" not in deeper:
+                    return deeper
+            except OSError:
+                pass
+        return url
+    return None
+
+
+def _query(url: str) -> dict[str, str]:
+    q = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
+    return {k: v[0] for k, v in q.items() if v}
+
+
+def allowed_portal_hosts(config: dict | None) -> set[str]:
+    """Hosts we are willing to send the portal password to.
+
+    A hostile Wi-Fi can serve a fake /userportal page.  Pinning the host means
+    the password can only go to the real campus portal.
+    """
+    cfg = config or {}
+    hosts = cfg.get("portal_hosts") or cfg.get("portal_host") or [PORTAL_HOST]
+    if isinstance(hosts, str):
+        hosts = [hosts]
+    return {str(h).strip().lower() for h in hosts if str(h).strip()}
+
+
+def trusted_portal(url: str, config: dict | None) -> bool:
+    host = (urllib.parse.urlsplit(url).hostname or "").lower()
+    return host in allowed_portal_hosts(config)
+
+
+def _json(resp: HttpResponse) -> dict:
+    try:
+        return json.loads(resp.text)
+    except Exception:
+        return {}
+
+
+def login(config: dict, device: str, *, verbose: bool = True,
+          force: bool = False, _depth: int = 0) -> tuple[bool, str]:
+    """Run the whole pre-auth -> portal -> newlogin.do flow."""
+
+    def log(msg: str) -> None:
+        if verbose:
+            print(f"[curaj-login] {msg}", flush=True)
+
+    try:
+        first = probe(device)
+    except OSError as exc:
+        return False, f"connectivity probe failed on {device}: {exc}"
+    if first.status == 204 and not force:
+        return True, "already online"
+
+    portal = find_portal(first, device)
+    if not portal:
+        if first.status == 204:
+            return True, "already online (no portal page to post to)"
+        return False, (f"no captive portal found "
+                       f"(probe HTTP {first.status} from {device})")
+
+    log(f"portal: {portal}")
+    if not trusted_portal(portal, config):
+        host = urllib.parse.urlsplit(portal).hostname
+        return False, (f"refusing to send credentials to untrusted portal "
+                       f"host {host!r}")
+    params = _query(portal)
+    parts = urllib.parse.urlsplit(portal)
+    netloc = parts.netloc or PORTAL_HOST
+    requesturi = params.get("requesturi", CHECK_URL)
+
+    # 1. establish the portal session (JSESSIONID carries ip/mac/sc context)
+    try:
+        splash = http_request(portal, device, timeout=8.0)
+    except OSError as exc:
+        return False, f"portal unreachable: {exc}"
+
+    cookie = None
+    for value in splash.header_all("Set-Cookie"):
+        if value.upper().startswith("JSESSIONID="):
+            cookie = value.split(";", 1)[0]
+            break
+
+    if not cookie:
+        return False, "portal did not issue a JSESSIONID"
+
+    common = {
+        "Cookie": cookie,
+        "Referer": f"http://{netloc}/userportal/pages/usermedia/curaj/app/"
+                   f"campus/ui/login.html",
+        "Origin": f"http://{netloc}",
+    }
+
+    # 2. same hop the browser makes: login.do -> SPA
+    try:
+        http_request(
+            f"http://{netloc}/userportal/login.do?requesturi="
+            + urllib.parse.quote(requesturi, safe=""),
+            device, method="POST", body=b"", headers=common, timeout=8.0)
+    except OSError:
+        pass  # not strictly required; newlogin.do is what matters
+
+    # 3. actual credential POST
+    body = urllib.parse.urlencode({
+        "username": config["username"],
+        "password": config["password"],
+        "phone": "0",
+        "type": "2",
+        "jsonresponse": "1",
+    }).encode()
+
+    hdrs = dict(common)
+    hdrs["Content-Type"] = "application/x-www-form-urlencoded"
+
+    log(f"POST http://{netloc}/userportal/newlogin.do "
+        f"(user {config['username']})")
+
+    try:
+        resp = http_request(f"http://{netloc}/userportal/newlogin.do",
+                            device, method="POST", body=body,
+                            headers=hdrs, timeout=10.0)
+    except OSError as exc:
+        return False, f"login POST failed: {exc}"
+
+    data = _json(resp)
+    log(f"portal says: {data or resp.text[:200]!r}")
+
+    ok = (data.get("errorKey") == "success"
+          or data.get("errorMessage") == "success_net")
+
+    # "redirect_to_nas" / "Session already running" mean the NAS still holds a
+    # half-session (or the request lost the sc context).  Kill the portal
+    # session with our cookie, then the NAS one, and retry exactly once.
+    stale = (data.get("errorKey") == "redirect_to_nas"
+             or "already running" in str(data.get("errorMessage", "")).lower())
+    if not ok and stale and _depth < 1:
+        log("portal reports an existing/stale session; logging it out and retrying")
+        for url, hdrs in (
+            (f"http://{netloc}/userportal/logout.do", {"Cookie": cookie}),
+            (NAS_LOGOUT_URL, None),
+        ):
+            try:
+                http_request(url, device, headers=hdrs, timeout=5.0)
+            except OSError:
+                pass
+        time.sleep(2.0)
+        if probe(device).status == 204:
+            return True, "logged in (stale session cleared)"
+        portal2 = find_portal(probe(device), device)
+        if portal2:
+            return login(config, device, verbose=verbose,
+                         force=False, _depth=_depth + 1)
+
+    if not ok:
+        msg = (data.get("errorMessage") or data.get("errorKey")
+               or resp.text.strip()[:200] or f"HTTP {resp.status}")
+        return False, f"login rejected: {msg}"
+
+    # 4. verify that the NAS actually let traffic through
+    for _ in range(6):
+        time.sleep(1.5)
+        if probe(device).status == 204:
+            return True, "logged in"
+    return False, "portal said success but internet is still blocked"
+
+
+def portal_url_any(device: str) -> str | None:
+    """Find a userportal URL even when the NAS already considers us online.
+
+    The NAS splash at 1.254.254.254 answers in both auth states and hands out
+    a fresh sc token, so it is the reliable discovery point for logout.
+    """
+    try:
+        r = probe(device)
+        if r.status != 204:
+            found = find_portal(r, device)
+            if found:
+                return found
+    except OSError:
+        pass
+
+    for splash in ("http://1.254.254.254/", "http://1.254.254.254/login"):
+        try:
+            found = find_portal(http_request(splash, device, timeout=6.0),
+                                device)
+        except OSError:
+            continue
+        if found and "/userportal" in found:
+            return found
+    return None
+
+
+def _session_cookie(portal: str, device: str) -> str | None:
+    r = http_request(portal, device, timeout=8.0)
+    for value in r.header_all("Set-Cookie"):
+        if value.upper().startswith("JSESSIONID="):
+            return value.split(";", 1)[0]
+    return None
+
+
+def logout(device: str, config: dict | None = None) -> tuple[bool, str]:
+    """Real logout.
+
+    A bare GET /logout or /logout.do is a no-op: the portal can only tear the
+    session down when the request carries the JSESSIONID that was bound to the
+    NAS session by newlogin.do.  So: discover the portal (works while online
+    too), open a session, bind it with the credentials, then logout.do.
+    """
+    msgs: list[str] = []
+    portal = portal_url_any(device)
+
+    if portal and not trusted_portal(portal, config):
+        host = urllib.parse.urlsplit(portal).hostname
+        msgs.append(f"untrusted portal host {host!r}")
+        portal = None
+
+    if not portal:
+        msgs.append("no portal URL")
+    else:
+        netloc = urllib.parse.urlsplit(portal).netloc or PORTAL_HOST
+        try:
+            cookie = _session_cookie(portal, device)
+            msgs.append(f"session: {'JSESSIONID' if cookie else 'none'}")
+        except OSError as exc:
+            cookie = None
+            msgs.append(f"session: {exc}")
+
+        if cookie:
+            # "Session already running" is the normal answer here; the useful
+            # side effect is that the fresh JSESSIONID is now bound to the
+            # live NAS session, which is what makes logout.do work.
+            if config and config.get("username"):
+                body = urllib.parse.urlencode({
+                    "username": config["username"],
+                    "password": config["password"],
+                    "phone": "0",
+                    "type": "2",
+                    "jsonresponse": "1",
+                }).encode()
+                try:
+                    http_request(
+                        f"http://{netloc}/userportal/newlogin.do",
+                        device, method="POST", body=body,
+                        headers={
+                            "Cookie": cookie,
+                            "Content-Type": "application/x-www-form-urlencoded",
+                            "Referer": f"http://{netloc}/userportal/pages/"
+                                       f"usermedia/curaj/app/campus/ui/login.html",
+                            "Origin": f"http://{netloc}",
+                        },
+                        timeout=8.0)
+                except OSError:
+                    pass
+
+            try:
+                r = http_request(
+                    f"http://{netloc}/userportal/logout.do",
+                    device, headers={"Cookie": cookie}, timeout=6.0)
+                msgs.append(f"logout.do -> {r.status}")
+            except OSError as exc:
+                msgs.append(f"logout.do -> {exc}")
+
+    try:
+        r = http_request(NAS_LOGOUT_URL, device, timeout=6.0)
+        msgs.append(f"nas/logout -> {r.status}")
+    except OSError as exc:
+        msgs.append(f"nas/logout -> {exc}")
+
+    time.sleep(1.5)
+    try:
+        online = probe(device).status == 204
+    except OSError:
+        online = False
+    return (not online), "; ".join(msgs)
+
+
+# --------------------------------------------------------------------------
+# config / CLI
+# --------------------------------------------------------------------------
+
+
+def load_config() -> dict:
+    if not CONFIG_PATH.exists():
+        sys.exit(f"missing config: {CONFIG_PATH}\n"
+                 f"copy config.example.json there and fill it in "
+                 f"(chmod 600).")
+    try:
+        cfg = json.loads(CONFIG_PATH.read_text())
+    except Exception as exc:
+        sys.exit(f"cannot parse {CONFIG_PATH}: {exc}")
+    for key in ("username", "password"):
+        if not cfg.get(key):
+            sys.exit(f"{CONFIG_PATH}: '{key}' is empty")
+    cfg.setdefault("ssid", DEFAULT_SSID)
+    cfg.setdefault("interface", "")
+    return cfg
+
+
+def resolve_device(cfg: dict, override: str | None) -> str | None:
+    if override:
+        return override
+    if cfg.get("interface"):
+        return cfg["interface"]
+    return iface_for_ssid(cfg.get("ssid", DEFAULT_SSID))
+
+
+def cmd_status(cfg: dict, args) -> int:
+    dev = resolve_device(cfg, args.interface)
+    if not dev:
+        print(f"not connected to '{cfg.get('ssid', DEFAULT_SSID)}' "
+              f"(no matching wifi interface)")
+        return 2
+    try:
+        r = probe(dev)
+    except OSError as exc:
+        print(f"probe failed via {dev}: {exc}")
+        return 1
+    if r.status == 204:
+        print(f"online via {dev}")
+        return 0
+    portal = find_portal(r, dev)
+    print(f"blocked via {dev} (probe HTTP {r.status})")
+    if portal:
+        print(f"portal: {portal}")
+    return 1
+
+
+def cmd_once(cfg: dict, args) -> int:
+    dev = resolve_device(cfg, args.interface)
+    if not dev:
+        print(f"not connected to '{cfg.get('ssid', DEFAULT_SSID)}'")
+        return 2
+    ok, msg = login(cfg, dev, verbose=True, force=args.force)
+    print(("OK: " if ok else "FAIL: ") + msg)
+    return 0 if ok else 1
+
+
+def cmd_logout(cfg: dict, args) -> int:
+    dev = resolve_device(cfg, args.interface)
+    if not dev:
+        print("no matching wifi interface")
+        return 2
+    ok, msg = logout(dev, cfg)
+    print(("logged out: " if ok else "still online: ") + msg)
+    return 0 if ok else 1
+
+
+def cmd_watch(cfg: dict, args) -> int:
+    ssid = cfg.get("ssid", DEFAULT_SSID)
+    online_sleep = int(cfg.get("poll_online", 60))
+    retry_sleep = int(cfg.get("poll_retry", 20))
+    failures = 0
+
+    print(f"[curaj-login] watching for '{ssid}'", flush=True)
+
+    while True:
+        dev = resolve_device(cfg, args.interface)
+        if not dev:
+            time.sleep(30)
+            continue
+
+        try:
+            r = probe(dev)
+            if r.status == 204:
+                if failures:
+                    print(f"[curaj-login] online again via {dev}", flush=True)
+                failures = 0
+                time.sleep(online_sleep)
+                continue
+
+            print(f"[curaj-login] captive portal detected on {dev}",
+                  flush=True)
+            ok, msg = login(cfg, dev, verbose=True)
+            print(("[curaj-login] " + ("OK: " if ok else "FAIL: ") + msg),
+                  flush=True)
+
+            if ok:
+                failures = 0
+                time.sleep(online_sleep)
+            else:
+                failures += 1
+                time.sleep(min(retry_sleep * failures, 300))
+        except KeyboardInterrupt:
+            return 0
+        except Exception as exc:                     # never die in a loop
+            failures += 1
+            print(f"[curaj-login] error: {exc}", flush=True)
+            time.sleep(min(retry_sleep * failures, 300))
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(prog="curaj-login",
+                                 description="CURAJ CAMPUS CONNECT auto-login")
+    ap.add_argument("-i", "--interface",
+                    help="wifi interface (default: auto-detect by SSID)")
+    ap.add_argument("-c", "--config", help="config path")
+    sub = ap.add_subparsers(dest="cmd")
+
+    sub.add_parser("status", help="show whether the wifi is authenticated")
+    p_once = sub.add_parser("once", help="run one login attempt")
+    p_once.add_argument("--force", action="store_true",
+                        help="POST even if the connection already works")
+    sub.add_parser("watch", help="stay running and re-login forever")
+    sub.add_parser("logout", help="log the current device out")
+
+    args = ap.parse_args()
+
+    global CONFIG_PATH
+    if args.config:
+        CONFIG_PATH = Path(args.config).expanduser()
+
+    cfg = load_config()
+
+    if args.cmd is None:
+        args.cmd = "status"
+
+    return {
+        "status": cmd_status,
+        "once": cmd_once,
+        "watch": cmd_watch,
+        "logout": cmd_logout,
+    }[args.cmd](cfg, args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

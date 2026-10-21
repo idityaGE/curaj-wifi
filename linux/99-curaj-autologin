@@ -1,0 +1,26 @@
+#!/bin/sh
+# Optional: instant login the moment NetworkManager brings the campus Wi-Fi up.
+# Install as root:
+#   sudo install -m755 99-curaj-autologin /etc/NetworkManager/dispatcher.d/
+#
+# The systemd --user watch service already handles this on a 60 s poll; this
+# hook just removes the wait.
+
+IFACE="$1"
+ACTION="$2"
+
+[ "$ACTION" = "up" ] || exit 0
+[ "$CONNECTION_ID" = "CURAJ CAMPUS CONNECT" ] || exit 0
+[ -n "$IFACE" ] || exit 0
+
+# first logged-in human session
+USER_NAME=$(loginctl list-sessions --no-legend 2>/dev/null | awk 'NF>=3 {print $3; exit}')
+[ -n "$USER_NAME" ] || exit 0
+
+HOME_DIR=$(getent passwd "$USER_NAME" | cut -d: -f6)
+BIN="$HOME_DIR/.local/bin/curaj-login"
+[ -x "$BIN" ] || exit 0
+
+# never block NetworkManager
+runuser -u "$USER_NAME" -- "$BIN" once >/dev/null 2>&1 &
+exit 0

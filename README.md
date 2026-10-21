@@ -1,0 +1,373 @@
+# CURAJ CAMPUS CONNECT — auto-login
+
+Reverse-engineered the captive portal, then built:
+
+* **Linux** — `curaj-login`, a dependency-free Python client + systemd user service.
+* **Android** — a small Kotlin app with a foreground service that logs you in
+  whenever the portal blocks the Wi-Fi.
+
+Everything here was derived from live traffic on `CURAJ CAMPUS CONNECT`
+(interface `wlp0s20f3`, IP `10.50.11.134`, gateway `10.50.0.1`).
+
+## Documentation
+
+| document | contents |
+|---|---|
+| [docs/REVERSE-ENGINEERING.md](docs/REVERSE-ENGINEERING.md) | full narrative: recon, mistakes, every request, `sc` analysis, security findings |
+| [docs/ENDPOINTS.md](docs/ENDPOINTS.md) | endpoint card: methods, parameters, response schemas, checklist |
+| [docs/EVIDENCE.md](docs/EVIDENCE.md) | raw headers, bodies, JSON, service logs (credentials redacted) |
+| [docs/ANDROID.md](docs/ANDROID.md) | Android permissions, background model, OEM setup, testing, credential pinning |
+| [docs/ANDROID-ARCHITECTURE.md](docs/ANDROID-ARCHITECTURE.md) | app architecture, runtime flows, concurrency, notification state machine, logout, and the failures fixed along the way |
+| [docs/BUILD-ONLINE.md](docs/BUILD-ONLINE.md) | build the APK with GitHub Actions, Codemagic, Bitrise, Appcircle, GitLab CI, or Codespaces |
+| [docs/LOCAL-BUILD.md](docs/LOCAL-BUILD.md) | build the APK locally with JDK 17 + Android command-line tools, no Android Studio |
+| [docs/RELEASE-BUILD.md](docs/RELEASE-BUILD.md) | create/back up a release key, build a signed production APK, verify it, and distribute it |
+| [docs/ANDROID-TEST.md](docs/ANDROID-TEST.md) | live test on Android 16: install, DNS probe failure/fix, successful login, Wi-Fi reconnect, duplicate-auth race, logout |
+
+---
+
+## 1. What the portal actually is
+
+```
+laptop ──Wi-Fi── 10.50.0.1  (NAS/gateway)
+                    ├── :53   DNS
+                    ├── :3128 Squid (transparent HTTP proxy)
+                    └── :80   closed
+                          │
+                          └── pre-auth HTTP is answered by lighttpd/1.4.37
+                              "Powered by Inventum Technologies"
+                              meta-refresh →
+                              http://122.252.242.93/userportal/?...
+                                   Apache/2.2.15 (CentOS) + Tomcat/5.5.23
+                                   RailWire / Inventum portal
+```
+
+There is no login page on the gateway itself. The gateway hijacks any
+plain-HTTP request and returns a 1-second meta-refresh page:
+
+```html
+<META HTTP-EQUIV="Refresh" CONTENT="1;URL=http://122.252.242.93/userportal/
+  ?requesturi=http%3a%2f%2fexample%2ecom%2f%3f
+  &ip=10%2e50%2e11%2e134
+  &mac=74%3a04%3af1%3ade%3a65%3a52
+  &nas=curaj
+  &requestip=example%2ecom
+  &sc=6d244db2d6b400d00d5f9fa1e00af476
+  &interface=cpeth3
+  &locationid=B5-FF-Roomno.126:CURAJ%20CAMPUS%20CONNECT">
+```
+
+| parameter | meaning |
+|---|---|
+| `ip`, `mac` | client identity as seen by the NAS |
+| `nas=curaj` | NAS/realm name |
+| `sc` | 32-hex per-device token; the portal session is bound to it |
+| `interface=cpeth3` | NAS-side captive interface |
+| `locationid` | AP / room name |
+| `requesturi` | the URL you originally asked for |
+
+`sc` is **not** derived on the client and does not need to be forged — it is
+handed to you in the redirect. The client parses it and keeps the matching
+`JSESSIONID`.
+
+## 2. The exact login flow
+
+```
+1. GET http://connectivitycheck.gstatic.com/generate_204
+      → 200 + meta-refresh (captive)      [204 = already online]
+
+2. GET http://122.252.242.93/userportal/?...&sc=...
+      → 200, Set-Cookie: JSESSIONID=...
+      → body auto-POSTs login.do
+
+3. POST http://122.252.242.93/userportal/login.do?requesturi=...
+      → 200, JS redirect to
+        /userportal/pages/usermedia/curaj/app/campus/ui/index.html
+
+4. POST http://122.252.242.93/userportal/newlogin.do     (same JSESSIONID)
+      Content-Type: application/x-www-form-urlencoded
+
+      username=<mobile>&password=<password>&phone=0&type=2&jsonresponse=1
+
+      → {"errorKey":"success","errorMessage":"success_net"}
+
+5. NAS opens the gate for that MAC/IP.
+      GET generate_204 → 204
+```
+
+The form is nothing more than
+`/userportal/pages/usermedia/curaj/app/campus/ui/login.html`:
+
+```html
+<form id="form1" method="POST" action="/userportal/newlogin.do">
+  <input name="username" maxlength="10">
+  <input type="password" name="password">
+  <input type="hidden" name="phone" value="0">
+  <input type="hidden" name="type" value="2">
+  <input type="hidden" name="jsonresponse" value="1">
+</form>
+```
+
+The page checks both fields before redirecting:
+
+```js
+if (data.errorMessage == "success_net" && data.errorKey == "success")
+    window.location = "logout.html";
+```
+
+Other behaviour found while probing:
+
+* `POST newlogin.do` **without** the `sc`/`JSESSIONID` context →
+  `{"errorKey":"redirect_to_nas"}`.
+* `POST newlogin.do` with valid credentials while the NAS already considers
+  the device online → `{"errorMessage":"Session already running","errorKey":"failureCase"}`.
+  The client clears that by calling `logout.do` with its session cookie, then
+  the NAS `/logout`, and retrying once.
+* `GET /userportal/logout.do` **with the login JSESSIONID** → real logout
+  (the response is `200` and the SPA logout page).
+* `GET /userportal/logout.do` without a session → `302 http://1.254.254.254?N=<epoch-ms>`.
+* `GET http://1.254.254.254/logout` → `200` empty (NAS-side logout).
+* `http://1.254.254.254/` is the splash hop that redirects back to the portal.
+* `sc` was identical across separate logins for the same MAC/IP
+  (`6d244db2d6b400d00d5f9fa1e00af476`), so it behaves like a per-device token,
+  not a per-session nonce. The client still parses the current value.
+
+### Verified live (2026-10-21)
+
+```
+before           online via wlp0s20f3
+logout.do        blocked (probe HTTP 200, portal URL with sc)
+curaj-login once portal says success_net / success in 2.7 s
+after            generate_204 -> 204, https://example.com -> 200
+watch service    logged out 04:51:51, detected 04:52:24, re-logged-in 04:52:51
+```
+
+## 3. The trap that breaks naive scripts
+
+This laptop had **two default routes**: Wi-Fi (metric 600) and a USB-tethered
+phone (metric 100). Binding the source address with `curl --interface <ip>`
+is not enough — the kernel still picked the tether route and the portal looked
+unreachable. Every request in the Linux client sets `SO_BINDTODEVICE` on the
+socket; the Android client uses `Network.openConnection()` so the request is
+pinned to Wi-Fi and mobile data cannot steal it.
+
+If you debug by hand, prefer:
+
+```bash
+curl --interface wlp0s20f3 ...     # device, not address
+ip route get 122.252.242.93       # see which route actually wins
+```
+
+## 4. Linux
+
+```bash
+cd linux
+./install.sh
+$EDITOR ~/.config/curaj-wifi/config.json     # chmod 600, mobile + password
+
+curaj-login status        # online / blocked + portal URL
+curaj-login once          # one attempt, prints the portal's JSON
+curaj-login watch         # stay running
+curaj-login logout        # real logout (session-cookie based)
+```
+
+Logout notes: `logout` takes ~8 s because a bare `GET /logout` is a no-op.
+It discovers the portal via `1.254.254.254`, opens a session, binds it with
+`newlogin.do`, then calls `logout.do` with that `JSESSIONID`. Because the
+background service re-logs in within 60 s, stop it first if you want to stay
+offline:
+
+```bash
+systemctl --user stop curaj-login.service
+curaj-login logout
+```
+
+Enable the background service:
+
+```bash
+systemctl --user enable --now curaj-login.service
+journalctl --user -u curaj-login -f
+sudo loginctl enable-linger "$USER"   # only if it must run while logged out
+```
+
+`watch` probes every 60 s (`poll_online`) and retries failures with backoff.
+On `redirect_to_nas` it calls the NAS logout endpoint once and retries — that
+clears a stale half-session.
+
+Optional: log in instantly when NetworkManager brings the interface up
+(otherwise the worst case is a 60 s wait):
+
+```bash
+sudo install -m755 linux/99-curaj-autologin /etc/NetworkManager/dispatcher.d/
+```
+
+Offline test of the whole state machine (mock portal on localhost):
+
+```bash
+cd linux && python3 test_flow.py
+```
+
+Config keys:
+
+| key | default | |
+|---|---|---|
+| `username` | — | mobile number |
+| `password` | — | portal password |
+| `ssid` | `CURAJ CAMPUS CONNECT` | used to pick the interface |
+| `portal_hosts` | `["122.252.242.93"]` | hosts allowed to receive the password |
+| `interface` | auto | override, e.g. `wlp0s20f3` |
+| `poll_online` | `60` | seconds between checks when online |
+| `poll_retry` | `20` | base backoff when blocked |
+
+## 5. Android
+
+Source: `android/` (Kotlin, minSdk 26, targetSdk 35). Current APK is
+**1.3** (versionCode 4).
+
+```
+app/src/main/java/in/ac/curaj/autologin/
+  MainActivity.kt      credentials, test, logout, status, settings shortcuts
+  Prefs.kt             EncryptedSharedPreferences (Keystore-backed)
+  PortalClient.kt      probe, portal discovery, host pinning, login/logout
+  AutoLoginService.kt  foreground service + NetworkCallback + 60 s poll
+  BootReceiver.kt      restarts after boot / app update
+```
+
+See [docs/ANDROID-ARCHITECTURE.md](docs/ANDROID-ARCHITECTURE.md) for the full
+runtime and design walkthrough.
+
+Build with Android Studio (open `android/`) or, with the included Gradle 8.9
+wrapper:
+
+```bash
+cd android
+
+# development build (debug key)
+./gradlew assembleDebug
+adb install app/build/outputs/apk/debug/app-debug.apk
+
+# signed build for sharing with friends
+./gradlew assembleRelease
+```
+
+The signed release APK is at
+`android/app/build/outputs/apk/release/app-release.apk`. A prepared copy is in
+`dist/CURAJ-AutoLogin-1.3.apk`; see
+[docs/RELEASE-BUILD.md](docs/RELEASE-BUILD.md) for the keystore, verification,
+and distribution steps.
+
+No Android SDK locally? The repo includes **GitHub Actions** workflows:
+push it to GitHub, open **Actions → Build Android APK → Run workflow**, then
+download the `curaj-autologin-debug` artifact. A signed release can be built
+by pushing a tag such as `v1.3` (configure the signing secrets first). See
+[docs/BUILD-ONLINE.md](docs/BUILD-ONLINE.md) for the online options,
+[docs/LOCAL-BUILD.md](docs/LOCAL-BUILD.md) for the local JDK 17 + command-line
+SDK setup, or [docs/RELEASE-BUILD.md](docs/RELEASE-BUILD.md) for the signed
+production build.
+
+Permissions: the only runtime permission is **notifications** (Android 13+).
+`INTERNET`, `ACCESS_NETWORK_STATE`, `FOREGROUND_SERVICE`,
+`FOREGROUND_SERVICE_SPECIAL_USE` and `RECEIVE_BOOT_COMPLETED` are normal
+install-time permissions. The app deliberately does **not** ask for location,
+`ACCESS_WIFI_STATE` or `NEARBY_WIFI_DEVICES`.
+
+How it behaves:
+
+* Runs as a `specialUse` foreground service with a low-priority notification
+  and **Login now** / **Pause** actions.
+* `ConnectivityManager` callback fires when Wi-Fi appears and when Android
+  sets `NET_CAPABILITY_CAPTIVE_PORTAL` (or drops `VALIDATED`); a 60 s poll is
+  the fallback for OEMs that delay the callback.
+* It does **not** need location/SSID permission. It identifies the campus
+  portal by the redirect host (`122.252.242.93`), and
+  `PORTAL_HOSTS` refuses to send credentials to any other host — so a hostile
+  Wi-Fi cannot harvest the password with a fake `/userportal` page.
+* **Test login now** runs a one-shot login from the app even when background
+  mode is off. The last result and timestamp are shown on the main screen.
+* If Android’s own captive-portal login is already authenticating the same IP,
+  the app does not send a second login. It polls the probe, retries briefly,
+  and reports success as soon as the gate opens.
+* The notification is state-only: **Connected**, **Sign-in failed**, or
+  **Disconnected**. There are no “signing in” or “waiting” updates, and
+  identical states are not re-posted.
+* **Log out and stop auto-login** performs a real portal logout (fresh
+  `JSESSIONID` bound with `newlogin.do`, then `logout.do`), stops the service,
+  and turns the background switch off so it does not sign straight back in.
+* Failed attempts back off 1 → 2 → 4 → 8 → 15 minutes, so a wrong password
+  does not hammer the portal. **Login now** bypasses the backoff.
+* Credentials are encrypted with a Keystore master key.
+* Cleartext HTTP is permitted only for the portal IPs and the connectivity
+  check hosts (`res/xml/network_security_config.xml`).
+* On Android 12+ you may need to exempt the app from battery optimisation
+  (the app has a button that opens the right settings page). Some OEMs
+  (Xiaomi/Oppo/Vivo) additionally require "Autostart".
+
+## 6. Security findings (worth knowing)
+
+* **The password is sent over plain HTTP.** `newlogin.do` is
+  `http://122.252.242.93/...`, not HTTPS. Anyone on the path can read the
+  credentials. Use a password you do not reuse anywhere else, and consider
+  reporting this to the university IT/network team.
+* The portal stack is very old: Apache **2.2.15** (2010), Tomcat **5.5.23**
+  (2007), lighttpd **1.4.37**, all long past end-of-life.
+* `sc` is a long-lived per-device token, not a CSRF defence; it is visible in
+  every redirect and is bound to IP/MAC. See
+  [docs/REVERSE-ENGINEERING.md](docs/REVERSE-ENGINEERING.md#7-the-sc-token).
+* `logout.do` is a state-changing GET.
+
+## 7. Limits / unknowns
+
+* The derivation of `sc` was not reversed — it does not need to be, it is
+  parsed from the redirect each time.
+* The Android APK is built locally with JDK 17 + the Android command-line SDK
+  and has been tested on a OnePlus CPH2793 (Android 16). The debug APK is not
+  Play-Store signed.
+* If the university changes the portal vendor or the redirect shape, update
+  `PORTAL_URL_RE` in `linux/curaj-login` and the regexes in `PortalClient.kt`.
+* Session lifetime and whether one account can hold two simultaneous sessions
+  are still not measured; the service handles expiry by re-running the flow.
+
+## 8. Reproducing the recon
+
+```bash
+# 1. Is the Wi-Fi actually the path? (tether can hide the portal)
+ip route get 122.252.242.93
+
+# 2. What does pre-auth HTTP return?
+curl -sS --interface wlp0s20f3 --noproxy '*' -D - http://example.com/
+
+# 3. The gateway's proxy (also shows the portal redirect)
+curl -sS -x http://10.50.0.1:3128 http://example.com/
+
+# 4. What is exposed on the gateway?
+nmap -Pn -p 53,80,443,3128 10.50.0.1
+```
+
+---
+
+**Files**
+
+```
+curaj-wifi/
+├── README.md
+├── .github/workflows/
+│   ├── android.yml                 # debug APK on GitHub
+│   └── android-release.yml         # signed release on a tag
+├── docs/
+│   ├── REVERSE-ENGINEERING.md
+│   ├── ENDPOINTS.md
+│   ├── EVIDENCE.md
+│   ├── ANDROID.md
+│   ├── ANDROID-ARCHITECTURE.md
+│   ├── ANDROID-TEST.md
+│   ├── BUILD-ONLINE.md
+│   ├── LOCAL-BUILD.md
+│   └── RELEASE-BUILD.md
+├── linux/
+│   ├── curaj-login          # client (status/once/watch/logout)
+│   ├── curaj-login.service  # systemd --user unit
+│   ├── 99-curaj-autologin   # optional NetworkManager dispatcher hook
+│   ├── config.example.json
+│   ├── install.sh
+│   └── test_flow.py         # offline mock-portal test
+└── android/                 # Gradle project
+```

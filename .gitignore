@@ -1,0 +1,23 @@
+# Android / Gradle
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/keystore.properties
+android/release-signing.properties
+android/.idea/
+android/captures/
+*.iml
+*.apk
+*.aab
+*.jks
+*.keystore
+dist/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# OS / editor
+.DS_Store
+*.swp

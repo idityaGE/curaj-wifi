@@ -1,0 +1,9 @@
+{
+  "username": "9XXXXXXXXX",
+  "password": "your-portal-password",
+  "ssid": "CURAJ CAMPUS CONNECT",
+  "portal_hosts": ["122.252.242.93"],
+  "interface": "",
+  "poll_online": 60,
+  "poll_retry": 20
+}
