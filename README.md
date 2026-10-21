@@ -277,7 +277,7 @@ adb install app/build/outputs/apk/debug/app-debug.apk
 The signed release APK is at
 `android/app/build/outputs/apk/release/app-release.apk`. A prepared copy is in
 `dist/CURAJ-AutoLogin-1.5.apk`
-(SHA-256 `f13c37387bcca49602e066c6c7855907b25c0284234a8b64194967c5120914a9`);
+(SHA-256 `30ec1785b17482e66fce9ed78dda92afd695633759b6a6ea187b7b62eb367e1b`);
 see [docs/RELEASE-BUILD.md](docs/RELEASE-BUILD.md) for the keystore,
 verification, and distribution steps. Users upgrading from 1.4 can install
 1.5 over it (`adb install -r`) without losing the saved account.

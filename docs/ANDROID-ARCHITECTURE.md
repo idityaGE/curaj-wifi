@@ -29,7 +29,7 @@ Companion documents:
 | build | Gradle 8.9 wrapper, AGP 8.7.3, Kotlin 2.0.21, JDK 17 |
 | debug APK | `android/app/build/outputs/apk/debug/app-debug.apk` |
 | production APK | `dist/CURAJ-AutoLogin-1.5.apk` (release-signed) |
-| production SHA-256 | `f13c37387bcca49602e066c6c7855907b25c0284234a8b64194967c5120914a9` |
+| production SHA-256 | `30ec1785b17482e66fce9ed78dda92afd695633759b6a6ea187b7b62eb367e1b` |
 | tested device | OnePlus CPH2793, Android 16 |
 | campus Wi-Fi | `CURAJ CAMPUS CONNECT`, `wlan0`, `10.50.13.252/20` |
 | portal | `http://122.252.242.93/userportal` |

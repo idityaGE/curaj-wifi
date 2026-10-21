@@ -25,7 +25,7 @@ versionName     1.5  (versionCode 6)
 minSdk          26
 targetSdk       35
 signature       APK Signature Scheme v2 (release key)
-sha256          f13c37387bcca49602e066c6c7855907b25c0284234a8b64194967c5120914a9
+sha256          30ec1785b17482e66fce9ed78dda92afd695633759b6a6ea187b7b62eb367e1b
 ```
 
 ---

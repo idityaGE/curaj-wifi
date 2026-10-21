@@ -47,7 +47,7 @@ dist/INSTALL.txt
 | package | `in.ac.curaj.autologin` |
 | version | 1.5 (versionCode 6) |
 | size | 5.4 MB |
-| SHA-256 | `f13c37387bcca49602e066c6c7855907b25c0284234a8b64194967c5120914a9` |
+| SHA-256 | `30ec1785b17482e66fce9ed78dda92afd695633759b6a6ea187b7b62eb367e1b` |
 | APK signature | APK Signature Scheme v2, verified |
 | certificate SHA-256 | `55da02f424dbf6a4dfd9521b236c1bba4f598fe23db477afceea82fa894ac092` |
 

@@ -41,7 +41,7 @@ object Prefs {
 
     fun username(ctx: Context): String = sp(ctx).getString(KEY_USER, "").orEmpty()
     fun password(ctx: Context): String = sp(ctx).getString(KEY_PASS, "").orEmpty()
-    fun enabled(ctx: Context): Boolean = sp(ctx).getBoolean(KEY_ENABLED, true)
+    fun enabled(ctx: Context): Boolean = sp(ctx).getBoolean(KEY_ENABLED, false)
 
     fun setEnabled(ctx: Context, enabled: Boolean) {
         sp(ctx).edit().putBoolean(KEY_ENABLED, enabled).apply()

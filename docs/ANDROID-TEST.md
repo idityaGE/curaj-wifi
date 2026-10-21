@@ -320,7 +320,7 @@ prompt and the session-sheet close pass must be done through the app UI.
 * The 1.4 release APK was versionCode 5, SHA-256
   `58883579c95cb55b15c5fd10a09209e1c607125f4ce78b1bcdef0c3eba4b7eb8`.
 * The 1.5 release APK is versionCode 6, SHA-256
-  `f13c37387bcca49602e066c6c7855907b25c0284234a8b64194967c5120914a9`.
+  `30ec1785b17482e66fce9ed78dda92afd695633759b6a6ea187b7b62eb367e1b`.
   The distributed APK is release-signed; the debug variant is only for local
   development.
 * Android may show “unknown app” warnings when installing a release APK by

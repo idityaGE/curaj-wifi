@@ -136,7 +136,8 @@ Guards:
 10. Connect to `CURAJ CAMPUS CONNECT`. The notification should change to
     **Connected - internet is working** within a few seconds.
 
-The app does not need to be open. After the first save it starts on boot.
+The app does not need to be open. Once **Auto connect** is on, it starts on
+boot.
 
 ### Notification actions
 
