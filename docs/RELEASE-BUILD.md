@@ -37,7 +37,7 @@ android/app/build/outputs/apk/release/app-release.apk
 A copy prepared for sharing:
 
 ```
-dist/CURAJ-AutoLogin-1.4.apk
+dist/CURAJ-AutoLogin-1.5.apk
 dist/SHA256SUMS.txt
 dist/INSTALL.txt
 ```
@@ -45,14 +45,15 @@ dist/INSTALL.txt
 | item | value |
 |---|---|
 | package | `in.ac.curaj.autologin` |
-| version | 1.4 (versionCode 5) |
-| size | 3.3 MB |
-| SHA-256 | `58883579c95cb55b15c5fd10a09209e1c607125f4ce78b1bcdef0c3eba4b7eb8` |
+| version | 1.5 (versionCode 6) |
+| size | 5.4 MB |
+| SHA-256 | `f13c37387bcca49602e066c6c7855907b25c0284234a8b64194967c5120914a9` |
 | APK signature | APK Signature Scheme v2, verified |
 | certificate SHA-256 | `55da02f424dbf6a4dfd9521b236c1bba4f598fe23db477afceea82fa894ac092` |
 
 The code is the tested 1.3 login/logout code plus the 1.4 session-management
-changes. Only the build type and signing key differ.
+changes and the 1.5 Material 3 dashboard, network monitor, and `EPERM` retry.
+Only the build type and signing key differ from a debug build.
 
 ---
 
@@ -163,7 +164,7 @@ Expected:
 ```
 Verifies
 Verified using v2 scheme (APK Signature Scheme v2): true
-package: name='in.ac.curaj.autologin' versionCode='5' versionName='1.4'
+package: name='in.ac.curaj.autologin' versionCode='6' versionName='1.5'
 application-label:'CURAJ Auto Login'
 ```
 
@@ -174,16 +175,16 @@ Then prepare the distribution copy:
 
 ```bash
 mkdir -p ~/curaj-wifi/dist
-cp "$APK" ~/curaj-wifi/dist/CURAJ-AutoLogin-1.4.apk
+cp "$APK" ~/curaj-wifi/dist/CURAJ-AutoLogin-1.5.apk
 cd ~/curaj-wifi/dist
-sha256sum CURAJ-AutoLogin-1.4.apk > SHA256SUMS.txt
+sha256sum CURAJ-AutoLogin-1.5.apk > SHA256SUMS.txt
 ```
 
 ---
 
 ## 7. How friends install it
 
-Send them `CURAJ-AutoLogin-1.4.apk` (and optionally `SHA256SUMS.txt` and
+Send them `CURAJ-AutoLogin-1.5.apk` (and optionally `SHA256SUMS.txt` and
 `INSTALL.txt`).
 
 On the phone:
@@ -195,12 +196,17 @@ On the phone:
 4. Tap **Install**. Play Protect may warn because the APK is not from the Play
    Store; that is expected for a sideloaded app.
 5. Open **CURAJ Auto Login**.
-6. Each person enters **their own** mobile number and portal password.
+6. Each person enters **their own** mobile number and portal password. The
+   fields save automatically.
 7. Allow notifications.
-8. Turn on **Run in background**, tap **SAVE AND START**.
-9. Tap **ALLOW BACKGROUND (BATTERY OPTIMISATION)** and set it to
-   **Unrestricted / Don’t optimise**.
-10. On Xiaomi/Oppo/Vivo, also allow Autostart/background activity.
+8. Turn on **Auto connect**.
+9. Optionally tap **Enable Wi-Fi details** to show the SSID and signal
+   percentage; login works without it.
+10. Open the three-dot menu → **Battery optimisation** and set the app to
+    **Unrestricted / Don’t optimise**.
+11. On Xiaomi/Oppo/Vivo, also allow Autostart/background activity.
+12. Tap **Connect now** or wait for the service; when connected, the main
+    button becomes **Log out**.
 
 The app has no credentials baked in. Everyone uses their own account.
 
@@ -234,7 +240,7 @@ you intentionally want a separate app.
 ## 9. Building the release in GitHub Actions
 
 The repository includes `.github/workflows/android-release.yml`. It builds a
-signed release when you push a tag such as `v1.4`, and attaches the APK to the
+signed release when you push a tag such as `v1.5`, and attaches the APK to the
 GitHub Release.
 
 Configure these repository secrets:
@@ -258,8 +264,8 @@ keystore or passwords into a workflow file or a commit.
 Then:
 
 ```bash
-git tag v1.4
-git push origin v1.4
+git tag v1.5
+git push origin v1.5
 ```
 
 The workflow writes the secrets to a temporary properties file, sets

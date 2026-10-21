@@ -19,13 +19,13 @@ This machine now has:
 Build output:
 
 ```
-app-debug.apk   4.3 MB
+app-release.apk 5.4 MB
 package         in.ac.curaj.autologin
-versionName     1.4  (versionCode 5)
+versionName     1.5  (versionCode 6)
 minSdk          26
 targetSdk       35
-signature       APK Signature Scheme v2 (debug key)
-sha256          eb9a884cb57280f90c000fad308844cf755d9ab09387c37fda56fa4509bf21cd
+signature       APK Signature Scheme v2 (release key)
+sha256          f13c37387bcca49602e066c6c7855907b25c0284234a8b64194967c5120914a9
 ```
 
 ---
@@ -182,6 +182,18 @@ The first APK compiled but exposed two runtime issues that are now fixed in
   self-care cookie gets `302 http://1.254.254.254?N=...` and leaves the session
   alive. The app now obtains the context cookie first and verifies against a
   second list; it no longer treats the `302` as success.
+
+1.5 is the UI/network release:
+
+* Material 3 dashboard with live SSID (optional permission), IP, band, signal
+  percentage/RSSI, HTTP latency/loss, app throughput, and link speed.
+* Credentials save automatically; the switch is **Auto connect**; the main
+  button changes from **Connect now** to **Log out** when online.
+* The session list is a bottom sheet with a loading spinner, per-row close
+  spinner, and automatic refresh.
+* A shared `NetworkMonitor` supplies one fresh Wi-Fi `Network`; `EPERM` bind
+  failures are retried with a freshly resolved network instead of falling back
+  to mobile data.
 
 The full engineering narrative is in
 [ANDROID-ARCHITECTURE.md](ANDROID-ARCHITECTURE.md).

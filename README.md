@@ -240,11 +240,17 @@ Config keys:
 ## 5. Android
 
 Source: `android/` (Kotlin, minSdk 26, targetSdk 35). Current APK is
-**1.4** (versionCode 5).
+**1.5** (versionCode 6). The 1.5 release is a Material 3 redesign with a live
+network dashboard, auto-saving account fields, one-tap log out when connected,
+and a session sheet that loads with a spinner and refreshes itself.
 
 ```
 app/src/main/java/in/ac/curaj/autologin/
-  MainActivity.kt      credentials, test, sessions, logout, status, settings
+  MainActivity.kt      dashboard, auto-saving account, metrics, menu, logout
+  AppState.kt          live state shared by the activity and service
+  NetworkMonitor.kt    one fresh Wi-Fi Network for every portal request
+  NetworkMetrics.kt    HTTP latency/loss + app throughput sampler
+  SessionsSheet.kt     bottom sheet: list, close, verify, auto-refresh
   Prefs.kt             EncryptedSharedPreferences (Keystore-backed)
   PortalClient.kt      probe, discovery, host pinning, login/logout, sessions
   AutoLoginService.kt  foreground service + NetworkCallback + 60 s poll
@@ -270,25 +276,29 @@ adb install app/build/outputs/apk/debug/app-debug.apk
 
 The signed release APK is at
 `android/app/build/outputs/apk/release/app-release.apk`. A prepared copy is in
-`dist/CURAJ-AutoLogin-1.4.apk`
-(SHA-256 `58883579c95cb55b15c5fd10a09209e1c607125f4ce78b1bcdef0c3eba4b7eb8`);
+`dist/CURAJ-AutoLogin-1.5.apk`
+(SHA-256 `f13c37387bcca49602e066c6c7855907b25c0284234a8b64194967c5120914a9`);
 see [docs/RELEASE-BUILD.md](docs/RELEASE-BUILD.md) for the keystore,
-verification, and distribution steps.
+verification, and distribution steps. Users upgrading from 1.4 can install
+1.5 over it (`adb install -r`) without losing the saved account.
 
 No Android SDK locally? The repo includes **GitHub Actions** workflows:
 push it to GitHub, open **Actions → Build Android APK → Run workflow**, then
 download the `curaj-autologin-debug` artifact. A signed release can be built
-by pushing a tag such as `v1.4` (configure the signing secrets first). See
+by pushing a tag such as `v1.5` (configure the signing secrets first). See
 [docs/BUILD-ONLINE.md](docs/BUILD-ONLINE.md) for the online options,
 [docs/LOCAL-BUILD.md](docs/LOCAL-BUILD.md) for the local JDK 17 + command-line
 SDK setup, or [docs/RELEASE-BUILD.md](docs/RELEASE-BUILD.md) for the signed
 production build.
 
-Permissions: the only runtime permission is **notifications** (Android 13+).
-`INTERNET`, `ACCESS_NETWORK_STATE`, `FOREGROUND_SERVICE`,
-`FOREGROUND_SERVICE_SPECIAL_USE` and `RECEIVE_BOOT_COMPLETED` are normal
-install-time permissions. The app deliberately does **not** ask for location,
-`ACCESS_WIFI_STATE` or `NEARBY_WIFI_DEVICES`.
+Permissions: **notifications** (Android 13+) are requested at first launch.
+**Nearby Wi-Fi devices** (Android 13+) is optional and only used to show the
+SSID and signal strength on the dashboard; Android 12 and older use the
+fine-location permission for the same optional dashboard details. Login works
+without either permission and still shows the AP's IP, band, latency, loss,
+throughput, and link speed. `INTERNET`, `ACCESS_NETWORK_STATE`,
+`ACCESS_WIFI_STATE`, `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_SPECIAL_USE`
+and `RECEIVE_BOOT_COMPLETED` are normal install-time permissions.
 
 How it behaves:
 
@@ -296,35 +306,45 @@ How it behaves:
   and **Login now** / **Pause** actions.
 * `ConnectivityManager` callback fires when Wi-Fi appears and when Android
   sets `NET_CAPABILITY_CAPTIVE_PORTAL` (or drops `VALIDATED`); a 60 s poll is
-  the fallback for OEMs that delay the callback.
-* It does **not** need location/SSID permission. It identifies the campus
-  portal by the redirect host (`122.252.242.93`), and
+  the fallback for OEMs that delay the callback. The callback keeps one fresh
+  Wi-Fi `Network`; portal sockets are bound to it so a mobile-data connection
+  cannot steal credentials and a stale network cannot cause the intermittent
+  `EPERM` bind failure.
+* It identifies the campus portal by the redirect host (`122.252.242.93`), and
   `PORTAL_HOSTS` refuses to send credentials to any other host — so a hostile
   Wi-Fi cannot harvest the password with a fake `/userportal` page.
-* **Test login now** runs a one-shot login from the app even when background
-  mode is off. The last result and timestamp are shown on the main screen.
+* The main screen shows live status, the Wi-Fi SSID (when optional Wi-Fi
+  details are allowed), IP, band, signal percentage/RSSI, HTTP latency and
+  packet loss from five probes, app download/upload throughput, and the
+  negotiated link speed. It auto-refreshes every five seconds.
+* Account fields save automatically after a short debounce. The **Auto
+  connect** switch turns the foreground service on or off; there is no Save
+  button.
+* **Connect now** runs a one-shot login from the app even when auto connect is
+  off. When the portal is connected, the same button becomes **Log out**.
 * If Android’s own captive-portal login is already authenticating the same IP,
   the app does not send a second login. It polls the probe, retries briefly,
   and reports success as soon as the gate opens.
 * The notification is state-only: **Connected**, **Sign-in failed**, or
   **Disconnected**. There are no “signing in” or “waiting” updates, and
   identical states are not re-posted.
-* **Log out and stop auto-login** performs a real portal logout (fresh
-  `JSESSIONID` bound with `newlogin.do`, then `logout.do`), stops the service,
-  and turns the background switch off so it does not sign straight back in.
-* **Sessions** lists the two active portal sessions and lets you close the one
-  you are not using. When login hits the two-session limit, a separate
-  high-priority notification offers **Manage sessions**; the foreground
-  notification stays low-priority and silent. Only the session you select is
-  closed, then auto-login retries.
+* **Log out** performs a real portal logout (fresh `JSESSIONID` bound with
+  `newlogin.do`, then `logout.do`), stops the service, and turns Auto connect
+  off so it does not sign straight back in.
+* **Sessions** opens a bottom sheet that loads with a spinner, lists the two
+  active portal sessions, shows a spinner on the row being closed, and
+  auto-refreshes after a close. When login hits the two-session limit, a
+  separate high-priority notification offers **Manage sessions**; the
+  foreground notification stays low-priority and silent. Only the session you
+  select is closed, then auto-login retries.
 * Failed attempts back off 1 → 2 → 4 → 8 → 15 minutes, so a wrong password
   does not hammer the portal. **Login now** bypasses the backoff.
 * Credentials are encrypted with a Keystore master key.
 * Cleartext HTTP is permitted only for the portal IPs and the connectivity
   check hosts (`res/xml/network_security_config.xml`).
 * On Android 12+ you may need to exempt the app from battery optimisation
-  (the app has a button that opens the right settings page). Some OEMs
-  (Xiaomi/Oppo/Vivo) additionally require "Autostart".
+  (**three-dot menu → Battery optimisation**). Some OEMs (Xiaomi/Oppo/Vivo)
+  additionally require "Autostart".
 
 ## 6. Security findings (worth knowing)
 

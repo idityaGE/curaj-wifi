@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+    <item
+        android:id="@+id/action_battery"
+        android:title="@string/battery_optimisation"
+        app:showAsAction="never" />
+    <item
+        android:id="@+id/action_wifi"
+        android:title="@string/wifi_settings"
+        app:showAsAction="never" />
+    <item
+        android:id="@+id/action_about"
+        android:title="@string/about_privacy"
+        app:showAsAction="never" />
+    <item
+        android:id="@+id/action_logout"
+        android:title="@string/log_out"
+        app:showAsAction="never" />
+</menu>

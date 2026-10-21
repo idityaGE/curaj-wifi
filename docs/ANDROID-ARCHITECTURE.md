@@ -22,15 +22,14 @@ Companion documents:
 | item | value |
 |---|---|
 | application id | `in.ac.curaj.autologin` |
-| version | **1.4** (versionCode **5**) |
+| version | **1.5** (versionCode **6**) |
 | language | Kotlin |
 | minimum SDK | 26 (Android 8.0) |
 | target / compile SDK | 35 (Android 15) |
 | build | Gradle 8.9 wrapper, AGP 8.7.3, Kotlin 2.0.21, JDK 17 |
 | debug APK | `android/app/build/outputs/apk/debug/app-debug.apk` |
-| production APK | `dist/CURAJ-AutoLogin-1.4.apk` (release-signed) |
-| debug SHA-256 | `eb9a884cb57280f90c000fad308844cf755d9ab09387c37fda56fa4509bf21cd` |
-| production SHA-256 | `58883579c95cb55b15c5fd10a09209e1c607125f4ce78b1bcdef0c3eba4b7eb8` |
+| production APK | `dist/CURAJ-AutoLogin-1.5.apk` (release-signed) |
+| production SHA-256 | `f13c37387bcca49602e066c6c7855907b25c0284234a8b64194967c5120914a9` |
 | tested device | OnePlus CPH2793, Android 16 |
 | campus Wi-Fi | `CURAJ CAMPUS CONNECT`, `wlan0`, `10.50.13.252/20` |
 | portal | `http://122.252.242.93/userportal` |
@@ -57,11 +56,16 @@ restore the session without the user opening a browser**.
    immediately sign back in.
 8. When the account’s two-session limit is reached, list the active sessions
    and let the user close one; never kick another device automatically.
+9. Show a clear, live dashboard: connection state, SSID (when permitted),
+   signal percentage, IP, band, link speed, HTTP latency/loss, and app
+   throughput. Refresh it automatically without a manual Save button.
 
 ### Non-goals
 
 * Replacing the portal’s web UI or showing the portal inside a WebView.
-* Reading the SSID. That would require location permission on modern Android.
+* Gating login on the SSID. The dashboard reads it when the optional
+  nearby-Wi-Fi permission is granted, but the portal host remains the
+  security boundary.
 * VPN, traffic forwarding, or bypassing the portal’s authentication.
 * Google Play publishing. The production path is a private, release-signed APK
   distributed directly; see [RELEASE-BUILD.md](RELEASE-BUILD.md).
@@ -75,13 +79,13 @@ restore the session without the user opening a browser**.
 │ Android app process: in.ac.curaj.autologin                           │
 │                                                                      │
 │  MainActivity                                                        │
-│   ├─ credentials / test login / logout / battery settings            │
-│   ├─ writes Prefs                                                    │
+│   ├─ Material 3 dashboard + auto-saving credentials + logout         │
+│   ├─ reads AppState / NetworkMonitor / metrics                       │
 │   └─ starts or stops the foreground service                          │
 │             │                                                        │
 │             ▼                                                        │
 │  AutoLoginService  (specialUse foreground service)                   │
-│   ├─ ConnectivityManager.NetworkCallback                             │
+│   ├─ NetworkMonitor callback (fresh Wi-Fi Network)                   │
 │   ├─ 60 s poll                                                       │
 │   ├─ one-at-a-time + 20 s cooldown + failure backoff                │
 │   ├─ notification state machine                                      │
@@ -109,7 +113,11 @@ restore the session without the user opening a browser**.
 
 | component | responsibility | deliberately not responsible for |
 |---|---|---|
-| `MainActivity` | credentials UI, one-shot test, logout confirmation, status display, battery/Wi-Fi settings shortcuts | protocol details, background scheduling |
+| `MainActivity` | Material 3 dashboard, auto-saving credentials, one-shot connect/logout, live Wi-Fi and latency/throughput metrics, session sheet, battery/Wi-Fi settings menu | protocol details, background scheduling |
+| `AppState` | in-process live state shared by the activity and service | persistence |
+| `NetworkMonitor` | one fresh Wi-Fi `Network` for request binding, plus optional SSID/IP/signal/link details | portal logic |
+| `NetworkMetrics` | five HTTP probes for latency/loss, `TrafficStats` deltas for app throughput | ICMP (not available to normal apps) |
+| `SessionsSheet` | load/close/verify sessions with per-row spinners and 15 s auto-refresh | choosing sessions for the user |
 | `AutoLoginService` | stay alive, receive Wi-Fi callbacks, poll, serialize attempts, backoff, notifications | parsing the portal HTML |
 | `PortalClient` | probe, portal discovery, host pinning, login/logout HTTP, success verification | Android lifecycle, UI, notifications |
 | `Prefs` | encrypted credentials, enabled flag, last result/time | network or portal logic |
@@ -127,8 +135,7 @@ starting the background watcher.
 
 The service is started from exactly four places:
 
-1. `MainActivity` when the user taps **SAVE AND START** with **Run in
-   background** enabled.
+1. `MainActivity` when the user turns **Auto connect** on.
 2. `MainActivity.onCreate()` when the app opens and auto-login was already
    enabled.
 3. `BootReceiver` after `BOOT_COMPLETED` or `MY_PACKAGE_REPLACED`.
@@ -258,7 +265,7 @@ HTTP call. Without that, the next poll would log straight back in. The
 `newlogin.do` bind may briefly look like a login to the portal; that is
 intentional, and the immediate `logout.do` removes it. If logout cannot be
 verified, the app still leaves auto-login off and records `Logout failed: …`;
-the user can re-enable it with **SAVE AND START**.
+the user can turn **Auto connect** back on.
 
 ---
 
@@ -498,15 +505,20 @@ Declared permissions are deliberately minimal:
 ```
 INTERNET
 ACCESS_NETWORK_STATE
+ACCESS_WIFI_STATE
 FOREGROUND_SERVICE
 FOREGROUND_SERVICE_SPECIAL_USE
 POST_NOTIFICATIONS
 RECEIVE_BOOT_COMPLETED
+NEARBY_WIFI_DEVICES          (runtime, API 33+, neverForLocation)
+ACCESS_FINE_LOCATION         (runtime, API 26–32 only)
 ```
 
-The only runtime permission is notifications on Android 13+. The app does not
-request location, `ACCESS_WIFI_STATE`, `NEARBY_WIFI_DEVICES`, phone state, or
-battery-optimisation permission. The battery button opens the system settings
+Notifications are the only runtime permission needed for login. Nearby Wi-Fi
+(Android 13+) or fine location (Android 12 and older) is requested only when
+the user taps **Enable Wi-Fi details**, and is used only for the dashboard’s
+SSID/signal display. The app does not request background location, phone
+state, or battery-optimisation permission. The menu opens the battery settings
 page instead of requesting `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`.
 
 ### The unavoidable plaintext caveat
@@ -677,6 +689,39 @@ fact that the app reports success only after the probe reaches `204`. A brief
 system notification can still appear; it normally clears once the network is
 validated.
 
+### 9.11 Intermittent `EPERM` when binding to Wi-Fi (1.5)
+
+**Symptom**
+
+Auto-login sometimes failed with `Permission denied` / `EPERM` while opening a
+socket, especially when mobile data was also active or the phone had just
+roamed between APs.
+
+**Cause**
+
+The old request path could fall back to a network from `allNetworks` when
+mobile data was the active network. That list can contain a stale Wi-Fi
+network object; `Network.openConnection()` on it throws `EPERM` on some Android
+builds.
+
+**Fix**
+
+* `NetworkMonitor` registers a `NetworkCallback` for Wi-Fi and exposes exactly
+  one fresh `Network`.
+* `PortalClient` pins every portal socket to that network and never falls back
+  to mobile data.
+* `login()` maps `EPERM`/`EACCES`/`Binding socket` failures to
+  `Result(bindError = true)`. The service asks `NetworkMonitor` for a fresh
+  network and retries with a short delay instead of reporting a hard failure.
+* The retry loop is bounded, so a genuinely broken Wi-Fi stack still ends in a
+  normal failure and backoff.
+
+**Verified**
+
+The 1.5 release installed over 1.4, kept the saved account, launched, and
+auto-logged in (`login ok=true: already online`) with mobile data and Wi-Fi
+both enabled.
+
 ---
 
 ## 10. Build, install, and test
@@ -770,6 +815,7 @@ Approximate evolution from the build/test notes:
 | 1.2 | 3 | fixed pre-login DNS failure with fixed probe IPs; cleartext allowlist; live-test fixes |
 | 1.3 | 4 | duplicate-auth handling, transient retries, state-only notifications, logout button and real logout |
 | 1.4 | 5 | two-session limit detection, session list/logout with splash-context cookie, Manage sessions notification and retry |
+| 1.5 | 6 | Material 3 redesign, live network dashboard (SSID/signal/IP/band/latency/loss/throughput/link), auto-saving account fields, dynamic Connect now → Log out, session sheet with spinner/auto-refresh, shared `NetworkMonitor` and fresh-network `EPERM` retry |
 
 ---
 
@@ -815,5 +861,5 @@ If `adb logcat` shows nothing, confirm the service is running:
 adb shell dumpsys activity services in.ac.curaj.autologin
 ```
 
-If it is not running, open the app once and tap **SAVE AND START**; a
+If it is not running, open the app once and turn **Auto connect** on; a
 force-stopped app is not restarted by Android until it is opened again.

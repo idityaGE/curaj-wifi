@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="brand_blue">#8AB4FF</color>
+    <color name="brand_blue_dark">#5B8DEF</color>
+    <color name="brand_blue_container">#17325F</color>
+    <color name="status_green">#4ADE80</color>
+    <color name="status_amber">#FBBF24</color>
+    <color name="status_red">#F87171</color>
+    <color name="status_gray">#9CA3AF</color>
+</resources>

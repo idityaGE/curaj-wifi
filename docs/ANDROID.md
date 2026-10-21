@@ -35,31 +35,32 @@ The service never sends credentials to a host other than
 |---|---|---|---|
 | `INTERNET` | normal, install-time | talk to the portal | app cannot work |
 | `ACCESS_NETWORK_STATE` | normal, install-time | find the Wi-Fi `Network`, register the callback, bind requests to it | cannot choose the Wi-Fi interface |
+| `ACCESS_WIFI_STATE` | normal, install-time | read link speed, frequency and signal for the dashboard | metrics show dashes |
 | `FOREGROUND_SERVICE` | normal, install-time (API 28+) | keep the watcher alive | service start fails |
 | `FOREGROUND_SERVICE_SPECIAL_USE` | normal, install-time (API 34+) | required for the `specialUse` foreground service type | install/start fails on Android 14+ |
 | `POST_NOTIFICATIONS` | **runtime** (API 33+) | show the ongoing notification and its “Login now” / “Pause” actions | service still runs, but the notification is hidden from the shade and the actions are unavailable |
+| `NEARBY_WIFI_DEVICES` | **runtime** (API 33+), `neverForLocation` | optional: show the SSID and signal strength | login still works; the dashboard shows “Campus Wi-Fi” and omits signal details |
+| `ACCESS_FINE_LOCATION` | **runtime** (API 26–32 only) | optional: same dashboard details on older Android | login still works; the dashboard omits the SSID/signal |
 | `RECEIVE_BOOT_COMPLETED` | normal, install-time | restart the service after a reboot or app update | auto-login resumes only after the user opens the app |
 
 ### What the app deliberately does **not** ask for
 
 | not requested | why not |
 |---|---|
-| `ACCESS_FINE_LOCATION` | only needed to read the SSID. The app identifies the campus by the portal host, not by the Wi-Fi name. |
-| `ACCESS_WIFI_STATE` | not needed for `ConnectivityManager` network callbacks. |
-| `NEARBY_WIFI_DEVICES` | not needed without SSID/scan access. |
-| `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` | the app opens the battery-optimisation settings page instead; the user grants the exemption there. This avoids a Play-policy-restricted permission. |
-| `QUERY_ALL_PACKAGES`, `READ_PHONE_STATE`, `ACCESS_BACKGROUND_LOCATION` | not used at all. |
+| `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` | the app opens the battery-optimisation settings page from the three-dot menu instead; the user grants the exemption there. This avoids a Play-policy-restricted permission. |
+| `ACCESS_BACKGROUND_LOCATION` | not needed; Wi-Fi details are optional and only read while the app is visible. |
+| `QUERY_ALL_PACKAGES`, `READ_PHONE_STATE` | not used at all. |
 
-**Short answer:** the only runtime permission is **notifications** on Android
-13+. Everything else is granted at install time. The battery-optimisation
-exemption is a user setting, not a manifest permission.
+**Short answer:** notifications on Android 13+ are the only runtime permission
+needed for login. Nearby-Wi-Fi (or fine location on Android 12 and older) is
+optional and only feeds the dashboard. The battery-optimisation exemption is a
+user setting, not a manifest permission.
 
 ### Battery optimisation
 
 Doze and OEM power managers can delay the network callback or kill the
-service. The app has a button that opens
-`Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS`; pick the app and choose
-**Don’t optimise** / **Unrestricted**.
+service. Open the **three-dot menu → Battery optimisation**; pick the app and
+choose **Don’t optimise** / **Unrestricted**.
 
 This is optional in theory, but on Xiaomi/Oppo/Vivo/Realme/Samsung it is
 usually the difference between “works” and “works until the screen turns off”.
@@ -80,7 +81,7 @@ usually the difference between “works” and “works until the screen turns o
 
 The service is started in exactly four places:
 
-1. `MainActivity` when the user saves with “Run in background” on.
+1. `MainActivity` when the user turns **Auto connect** on.
 2. `MainActivity` on launch if it was already enabled.
 3. `BootReceiver` after boot / app update.
 4. The “Login now” / “Pause” notification actions.
@@ -119,25 +120,28 @@ Guards:
 
 1. Install the APK (see §4).
 2. Open **CURAJ Auto Login**.
-3. Enter the mobile number and portal password. “Show password” helps avoid
-   typos.
-4. Tap **Test login now**. This runs a one-shot login even if the background
-   switch is off, and reports the result under the button.
-5. Turn **Run in background** on, then **Save and start**.
+3. Enter the mobile number and portal password. Settings save automatically;
+   there is no Save button.
+4. Tap **Connect now**. This runs a one-shot login even if Auto connect is off,
+   and updates the status card and **Last action**.
+5. Turn **Auto connect** on. The service starts and the main button changes to
+   **Log out** once the portal session is connected.
 6. Allow notifications when prompted (Android 13+).
-7. Tap **Allow background (battery optimisation)** and set the app to
+7. Tap **Enable Wi-Fi details** in the Network card if you want the SSID and
+   signal percentage. This is optional; login works without it.
+8. Open the three-dot menu → **Battery optimisation**, then set the app to
    **Unrestricted**.
-8. On Xiaomi/Oppo/Vivo/Realme/Samsung, also enable **Autostart** and allow
+9. On Xiaomi/Oppo/Vivo/Realme/Samsung, also enable **Autostart** and allow
    background activity (see §6).
-9. Connect to `CURAJ CAMPUS CONNECT`. The notification should change to
-   **Connected - internet is working** within a few seconds.
+10. Connect to `CURAJ CAMPUS CONNECT`. The notification should change to
+    **Connected - internet is working** within a few seconds.
 
 The app does not need to be open. After the first save it starts on boot.
 
 ### Notification actions
 
 * **Login now** — force an attempt, bypassing the cooldown/backoff.
-* **Pause** — sets “Run in background” off, stops the service and removes the
+* **Pause** — sets **Auto connect** off, stops the service and removes the
   notification. Re-enable it in the app.
 * Tapping the notification opens the app, which shows the last result and its
   timestamp.
@@ -150,11 +154,11 @@ with a **Manage sessions** action; the foreground notification stays silent.
 
 ### Log out
 
-The app has a **LOG OUT AND STOP AUTO-LOGIN** button. It asks for confirmation,
-then:
+The main button becomes **Log out** when the portal session is connected. It
+asks for confirmation, then:
 
-1. turns the background switch off and stops the service (otherwise the next
-   poll would log straight back in);
+1. turns Auto connect off and stops the service (otherwise the next poll would
+   log straight back in);
 2. opens a fresh portal session via the NAS splash;
 3. binds that `JSESSIONID` with `newlogin.do`;
 4. calls `logout.do`, then the NAS logout as a fallback;
@@ -163,6 +167,7 @@ then:
 A bare `/logout` would be a no-op; the cookie binding step is what makes the
 portal actually tear down the session. The bind may briefly look like a login
 to the portal — that is intentional, and the immediate `logout.do` removes it.
+The three-dot menu also has a **Log out** item for the same action.
 
 ### Sessions
 
@@ -371,31 +376,25 @@ you are on a different captive portal — that is the pinning working.
 
 ---
 
-## 10. Why not check the SSID?
+## 10. Why Wi-Fi details are optional, not a gate
 
-It is a common design, but it costs a lot for very little:
+The app still identifies the campus by the portal host, not by the Wi-Fi name.
+The SSID is shown for reassurance and the signal/link numbers come from the
+same `WifiInfo`. It is deliberately **not** a connection gate:
 
-* Reading `WifiInfo.getSSID()` is location-gated on Android 8.1+. You would
-  have to ask for `ACCESS_FINE_LOCATION` (and the user must have system
-  location on). On Android 13+ `NEARBY_WIFI_DEVICES` exists, but SSID
-  redaction still depends on location in practice.
-* A location permission on a Wi-Fi auto-login app looks bad and invites
-  scrutiny.
-* The portal host is a **stronger** signal: another network with a captive
-  portal will not serve `122.252.242.93`, so the app does nothing, and the
+* Reading `WifiInfo.getSSID()` is location-gated on Android 8.1–12. The app
+  declares `ACCESS_FINE_LOCATION` with `maxSdkVersion="32"` and asks only when
+  the user taps **Enable Wi-Fi details**.
+* On Android 13+ the app uses `NEARBY_WIFI_DEVICES` with `neverForLocation`,
+  so it does not request background location.
+* Login must work on a phone where the user refuses the prompt. The portal
+  host check remains the security boundary: another network with a captive
+  portal will not serve `122.252.242.93`, so the app does nothing, and
   credential pinning prevents a fake portal from harvesting the password.
 
-If you still want an SSID gate, the minimal version is:
-
-```kotlin
-val wifi = applicationContext.getSystemService(WifiManager::class.java)
-@Suppress("MissingPermission")
-val ssid = wifi.connectionInfo.ssid.trim('"')
-if (ssid != "CURAJ CAMPUS CONNECT") return
-```
-
-with `ACCESS_FINE_LOCATION` + `ACCESS_WIFI_STATE` in the manifest, a runtime
-request, and a check that system location is enabled. It is not recommended.
+If the user refuses, the card shows **Campus Wi-Fi** and the signal metric
+falls back to a dash; the rest of the dashboard (IP, band, latency, loss,
+throughput, link speed) still works.
 
 ---
 
@@ -403,7 +402,11 @@ request, and a check that system location is enabled. It is not recommended.
 
 ```
 android/app/src/main/java/in/ac/curaj/autologin/
-  MainActivity.kt      credentials, test button, logout, status, settings shortcuts
+  MainActivity.kt      Material 3 dashboard, auto-save, metrics, menu, logout
+  AppState.kt          live state shared with the service
+  NetworkMonitor.kt    fresh Wi-Fi Network, SSID/IP/signal/link details
+  NetworkMetrics.kt    five HTTP probes + TrafficStats throughput deltas
+  SessionsSheet.kt     session bottom sheet with spinner/auto-refresh
   AutoLoginService.kt  FGS, callback, poll, backoff, notification actions
   PortalClient.kt      HTTP flow, host pinning, duplicate-auth handling, login/logout
   Prefs.kt             Keystore-backed credentials + last result

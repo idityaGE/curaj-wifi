@@ -55,6 +55,14 @@ object Prefs {
             .apply()
     }
 
+    fun setUsername(ctx: Context, value: String) {
+        sp(ctx).edit().putString(KEY_USER, value).apply()
+    }
+
+    fun setPassword(ctx: Context, value: String) {
+        sp(ctx).edit().putString(KEY_PASS, value).apply()
+    }
+
     fun lastResult(ctx: Context): String =
         sp(ctx).getString(KEY_LAST_RESULT, "").orEmpty()
 

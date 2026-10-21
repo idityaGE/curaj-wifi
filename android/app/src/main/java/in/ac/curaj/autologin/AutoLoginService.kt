@@ -6,10 +6,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
-import android.net.ConnectivityManager
 import android.net.Network
-import android.net.NetworkCapabilities
-import android.net.NetworkRequest
 import android.os.Build
 import android.os.IBinder
 import android.os.SystemClock
@@ -20,14 +17,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Persistent foreground service. Three triggers:
- *   - ConnectivityManager callback (fires when Wi-Fi appears and when the
- *     system flips NET_CAPABILITY_CAPTIVE_PORTAL / drops VALIDATED)
+ *   - the shared NetworkMonitor callback (fresh Wi-Fi Network)
  *   - a 60 s poll, because some OEMs delay/omit the callback
  *   - the "Login now" notification action
  *
@@ -38,8 +35,6 @@ class AutoLoginService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val busy = AtomicBoolean(false)
-    private lateinit var cm: ConnectivityManager
-    private var callback: ConnectivityManager.NetworkCallback? = null
     private var lastAttempt = 0L
     private var lastNetwork: Network? = null
     private var failures = 0
@@ -51,47 +46,35 @@ class AutoLoginService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        cm = getSystemService(ConnectivityManager::class.java)
+        NetworkMonitor.start(this)
         createChannel()
         val initial = initialText()
         lastNotificationText = initial
         startForeground(NOTIF_ID, notification(initial))
 
-        val request = NetworkRequest.Builder()
-            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
-            .build()
-
-        callback = object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) {
-                attempt(network)
-            }
-
-            override fun onCapabilitiesChanged(
-                network: Network,
-                caps: NetworkCapabilities
-            ) {
-                val captive = caps.hasCapability(
-                    NetworkCapabilities.NET_CAPABILITY_CAPTIVE_PORTAL
-                )
-                val validated = caps.hasCapability(
-                    NetworkCapabilities.NET_CAPABILITY_VALIDATED
-                )
-                if (captive || !validated) attempt(network)
-            }
-
-            override fun onLost(network: Network) {
-                val same = synchronized(this@AutoLoginService) {
-                    network == lastNetwork
+        scope.launch {
+            NetworkMonitor.wifi.collect { wifi ->
+                if (wifi == null) {
+                    synchronized(this@AutoLoginService) { lastNetwork = null }
+                    AppState.set(AppState.Connection.OFFLINE, TEXT_DISCONNECTED)
+                    update(TEXT_DISCONNECTED)
+                } else {
+                    attempt(wifi.network)
                 }
-                if (same) update(TEXT_DISCONNECTED)
             }
         }
-        cm.registerNetworkCallback(request, callback!!)
 
         scope.launch {
             while (isActive) {
                 delay(POLL_MS)
-                wifiNetwork()?.let { attempt(it) } ?: update(TEXT_DISCONNECTED)
+                val network = NetworkMonitor.current()
+                if (network == null) {
+                    synchronized(this@AutoLoginService) { lastNetwork = null }
+                    AppState.set(AppState.Connection.OFFLINE, TEXT_DISCONNECTED)
+                    update(TEXT_DISCONNECTED)
+                } else {
+                    attempt(network)
+                }
             }
         }
     }
@@ -101,21 +84,32 @@ class AutoLoginService : Service() {
             ACTION_PAUSE -> {
                 Prefs.setEnabled(this, false)
                 Prefs.record(this, "Paused by you")
+                AppState.set(AppState.Connection.PAUSED, "Auto connect is off")
                 cancelLimitNotification()
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
                 return START_NOT_STICKY
             }
-            ACTION_RESUME -> Prefs.setEnabled(this, true)
+            ACTION_RESUME -> {
+                Prefs.setEnabled(this, true)
+                AppState.set(AppState.Connection.CHECKING, "Resuming…")
+            }
         }
 
         if (!Prefs.enabled(this)) {
+            AppState.set(AppState.Connection.PAUSED, "Auto connect is off")
             stopSelf()
             return START_NOT_STICKY
         }
 
         val force = intent?.action == ACTION_LOGIN_NOW
-        wifiNetwork()?.let { attempt(it, force) } ?: update(TEXT_DISCONNECTED)
+        val network = NetworkMonitor.current()
+        if (network == null) {
+            AppState.set(AppState.Connection.OFFLINE, TEXT_DISCONNECTED)
+            update(TEXT_DISCONNECTED)
+        } else {
+            attempt(network, force)
+        }
         return START_STICKY
     }
 
@@ -140,43 +134,90 @@ class AutoLoginService : Service() {
         val pass = Prefs.password(this)
         if (user.isBlank() || pass.isBlank()) {
             busy.set(false)
+            AppState.set(AppState.Connection.PAUSED, TEXT_NO_CREDENTIALS)
             update(TEXT_NO_CREDENTIALS)
             return
         }
 
         scope.launch {
             try {
-                val result = PortalClient.login(this@AutoLoginService, network, user, pass)
+                Log.i(TAG, "attempt network=$network")
+                AppState.set(AppState.Connection.CHECKING, "Signing in…")
+                val result = PortalClient.login(
+                    this@AutoLoginService, network, user, pass
+                )
                 Log.i(TAG, "login ok=${result.ok}: ${result.message}")
-                if (result.ok) {
-                    transientRetries = 0
-                    noteSuccess()
-                    cancelLimitNotification()
-                    val text = if (result.message == "already online") {
-                        "Online (already signed in)"
-                    } else {
-                        "Online"
+                when {
+                    result.ok -> {
+                        transientRetries = 0
+                        noteSuccess()
+                        cancelLimitNotification()
+                        val text = if (result.message == "already online") {
+                            "Online (already signed in)"
+                        } else {
+                            "Online"
+                        }
+                        Prefs.record(this@AutoLoginService, text)
+                        AppState.set(AppState.Connection.ONLINE, text)
+                        update(TEXT_CONNECTED)
                     }
-                    Prefs.record(this@AutoLoginService, text)
-                    update(TEXT_CONNECTED)
-                } else if (result.sessionLimit) {
-                    transientRetries = 0
-                    noteFailure()
-                    Prefs.record(this@AutoLoginService, TEXT_SESSION_LIMIT)
-                    update(TEXT_SESSION_LIMIT, limit = true)
-                } else if (result.retryMs > 0 && allowTransientRetry()) {
-                    // The portal is still authenticating this IP. Check again
-                    // shortly; do not show a false failure in between.
-                    scope.launch {
-                        delay(result.retryMs)
-                        attempt(network, force = true)
+
+                    result.sessionLimit -> {
+                        transientRetries = 0
+                        noteFailure()
+                        Prefs.record(this@AutoLoginService, TEXT_SESSION_LIMIT)
+                        AppState.set(
+                            AppState.Connection.SESSION_LIMIT,
+                            TEXT_SESSION_LIMIT
+                        )
+                        update(TEXT_SESSION_LIMIT, limit = true)
                     }
-                } else {
-                    transientRetries = 0
-                    noteFailure()
-                    val text = "Sign-in failed: ${result.message}"
-                    Prefs.record(this@AutoLoginService, text)
-                    update(text)
+
+                    result.bindError && allowTransientRetry() -> {
+                        val fresh = NetworkMonitor.current()
+                        if (fresh == null) {
+                            synchronized(this@AutoLoginService) {
+                                lastNetwork = null
+                            }
+                            AppState.set(
+                                AppState.Connection.OFFLINE,
+                                TEXT_DISCONNECTED
+                            )
+                            update(TEXT_DISCONNECTED)
+                        } else {
+                            AppState.set(
+                                AppState.Connection.CHECKING,
+                                "Wi-Fi changed; retrying…"
+                            )
+                            scope.launch {
+                                delay(result.retryMs.coerceAtLeast(800L))
+                                attempt(fresh, force = true)
+                            }
+                        }
+                    }
+
+                    result.retryMs > 0 && allowTransientRetry() -> {
+                        // The portal is still authenticating this IP. Check again
+                        // shortly; do not show a false failure in between.
+                        AppState.set(
+                            AppState.Connection.CHECKING,
+                            "Waiting for portal…"
+                        )
+                        val fresh = NetworkMonitor.current() ?: network
+                        scope.launch {
+                            delay(result.retryMs)
+                            attempt(fresh, force = true)
+                        }
+                    }
+
+                    else -> {
+                        transientRetries = 0
+                        noteFailure()
+                        val text = "Sign-in failed: ${result.message}"
+                        Prefs.record(this@AutoLoginService, text)
+                        AppState.set(AppState.Connection.FAILED, text)
+                        update(text)
+                    }
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "login crashed", e)
@@ -184,6 +225,7 @@ class AutoLoginService : Service() {
                 noteFailure()
                 val text = "Sign-in error: ${e.message ?: e.javaClass.simpleName}"
                 Prefs.record(this@AutoLoginService, text)
+                AppState.set(AppState.Connection.FAILED, text)
                 update(text)
             } finally {
                 busy.set(false)
@@ -191,7 +233,7 @@ class AutoLoginService : Service() {
         }
     }
 
-    /** Bound the "portal is authenticating" loop so it cannot run forever. */
+    /** Bound transient loops so they cannot run forever. */
     private fun allowTransientRetry(): Boolean = synchronized(this) {
         if (transientRetries >= 10) {
             false
@@ -217,20 +259,6 @@ class AutoLoginService : Service() {
                 15 * 60_000L
             )
             backoffUntil = SystemClock.elapsedRealtime() + delayMs
-        }
-    }
-
-    private fun wifiNetwork(): Network? {
-        cm.activeNetwork?.let { active ->
-            if (cm.getNetworkCapabilities(active)
-                    ?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
-            ) {
-                return active
-            }
-        }
-        return cm.allNetworks.firstOrNull {
-            cm.getNetworkCapabilities(it)
-                ?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
         }
     }
 
@@ -341,7 +369,7 @@ class AutoLoginService : Service() {
 
     private fun initialText(): String {
         if (Prefs.username(this).isBlank()) return TEXT_NO_CREDENTIALS
-        if (wifiNetwork() == null) return TEXT_DISCONNECTED
+        if (NetworkMonitor.current() == null) return TEXT_DISCONNECTED
         val last = Prefs.lastResult(this)
         return when {
             last.startsWith("Online") -> TEXT_CONNECTED
@@ -372,7 +400,7 @@ class AutoLoginService : Service() {
     }
 
     override fun onDestroy() {
-        callback?.let { runCatching { cm.unregisterNetworkCallback(it) } }
+        NetworkMonitor.stop(this)
         scope.cancel()
         super.onDestroy()
     }

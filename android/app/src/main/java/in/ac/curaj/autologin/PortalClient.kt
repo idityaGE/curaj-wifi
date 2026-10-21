@@ -61,7 +61,9 @@ object PortalClient {
         /** If > 0, retry soon without treating this as a hard failure. */
         val retryMs: Long = 0L,
         /** The account already has its maximum two internet sessions. */
-        val sessionLimit: Boolean = false
+        val sessionLimit: Boolean = false,
+        /** The selected Network was stale/not bindable; retry with a fresh one. */
+        val bindError: Boolean = false
     )
 
     data class Session(
@@ -105,6 +107,33 @@ object PortalClient {
         user: String,
         pass: String,
         depth: Int = 0
+    ): Result {
+        return try {
+            loginOnce(ctx, network, user, pass, depth)
+        } catch (e: Exception) {
+            if (isBindError(e)) {
+                Log.w(TAG, "network bind failed; service will re-resolve Wi-Fi", e)
+                Result(
+                    false,
+                    "Wi-Fi network is changing",
+                    retryMs = 800L,
+                    bindError = true
+                )
+            } else {
+                Result(
+                    false,
+                    "login error: ${e.message ?: e.javaClass.simpleName}"
+                )
+            }
+        }
+    }
+
+    private fun loginOnce(
+        ctx: Context,
+        network: Network,
+        user: String,
+        pass: String,
+        depth: Int
     ): Result {
         if (user.isBlank() || pass.isBlank()) {
             return Result(false, "no credentials saved")
@@ -247,7 +276,7 @@ object PortalClient {
                 Thread.sleep(1500)
                 val code = runCatching { probe(network).code }.getOrNull()
                 if (code == 204) return Result(true, "already online")
-                return login(ctx, network, user, pass, depth + 1)
+                return loginOnce(ctx, network, user, pass, depth + 1)
             }
 
             return Result(false, "rejected: $reason")
@@ -628,6 +657,21 @@ object PortalClient {
             .replace("&gt;", ">", ignoreCase = true)
             .replace(Regex("\\s+"), " ")
             .trim()
+
+    private fun isBindError(e: Throwable): Boolean {
+        var current: Throwable? = e
+        while (current != null) {
+            val message = current.message.orEmpty()
+            if (message.contains("EPERM", ignoreCase = true) ||
+                message.contains("EACCES", ignoreCase = true) ||
+                message.contains("Binding socket", ignoreCase = true)
+            ) {
+                return true
+            }
+            current = current.cause
+        }
+        return false
+    }
 
     private fun isSessionLimit(text: String): Boolean {
         val value = text.lowercase()

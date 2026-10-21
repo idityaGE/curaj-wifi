@@ -189,14 +189,18 @@ portal_url_any()
 ## 6. Android app
 
 The main screen has a **Sessions** button. It requires saved credentials and a
-Wi-Fi network, then:
+Wi-Fi network, then opens a bottom sheet that:
 
-1. opens the splash context cookie;
+1. shows a loading spinner while it opens the splash context cookie;
 2. performs the `type=1` self-care login;
-3. lists the active sessions in a scrollable dialog;
+3. lists the active sessions (start time, duration, total, name, account);
 4. asks for confirmation before closing one;
-5. verifies the session is gone;
-6. if auto-login is enabled, starts a normal login attempt again.
+5. shows a spinner on the row being closed;
+6. verifies the session is gone, refreshes the list automatically, and, if
+   auto connect is enabled, starts a normal login attempt again.
+
+The sheet also refreshes itself every 15 seconds while it is open. If the list
+fails to load, it shows a **Retry** button instead of a blank panel.
 
 When the background service sees the two-session limit it posts a **separate**
 high-priority, one-shot notification:
@@ -208,7 +212,7 @@ Session limit reached
 ```
 
 The foreground notification remains low-priority and silent. Tapping **Manage
-sessions** opens the same dialog. Only the session the user selects is closed.
+sessions** opens the same sheet. Only the session the user selects is closed.
 
 ---
 

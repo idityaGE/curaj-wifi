@@ -6,12 +6,12 @@ Tested against the real campus network, not a mock.
 |---|---|
 | phone | OnePlus CPH2793 |
 | Android | 16 |
-| app | `in.ac.curaj.autologin` 1.4 (versionCode 5) |
+| app | `in.ac.curaj.autologin` 1.5 (versionCode 6) |
 | network | `CURAJ CAMPUS CONNECT` |
 | Wi-Fi IP | `10.50.13.252/20` |
 | Wi-Fi MAC | `da:bb:9b:8f:fd:16` |
 | portal | `122.252.242.93` |
-| result | 1.3: **login succeeded** (`204` through `wlan0`), **logout succeeded**. 1.4: release APK built and signature/metadata verified; the session-limit flow was verified live on Linux and needs the on-device pass below. |
+| result | 1.3: login succeeded (`204` through `wlan0`), logout succeeded. 1.4: release built and signature/metadata verified. 1.5: release installed over 1.4 without losing saved data; auto-login, dynamic **Log out**, and the live dashboard were verified on-device. The nearby-Wi-Fi prompt and session-sheet close still need a final pass with the cable connected. |
 
 Credentials are not shown here.
 
@@ -25,21 +25,45 @@ adb shell am start -W -n in.ac.curaj.autologin/.MainActivity
 ```
 
 The app asks for the notification permission on first launch. On Android 13+
-this is the only runtime permission it needs. It then shows:
+this is the only runtime permission it needs for login. The 1.5 main screen is
+a Material 3 dashboard:
 
 ```
-CURAJ CAMPUS CONNECT Auto Login
-Mobile number / username
-Password
-[x] Show password
-[x] Run in background
-[ SAVE AND START ]   [ TEST LOGIN NOW ]
-[ LOG OUT AND STOP AUTO-LOGIN ]
+CURAJ Auto Login                    ⋮
+┌──────────────────────────────────────┐
+│ CURAJ CAMPUS CONNECT              ●  │
+│ Connected                            │
+│ Internet is working                  │
+│ 10.50.13.252 · 2.4 GHz · -66 dBm    │
+│ [        Log out        ] [Sessions] │
+└──────────────────────────────────────┘
+┌──────────────────────────────────────┐
+│ Network                    just now ⟳│
+│ Signal          Latency              │
+│ ▂▄▆█ 75%        182 ms               │
+│ -66 dBm                              │
+│ Loss            Link speed           │
+│ 0% (5 probes)   39 Mbps              │
+│ Download        Upload               │
+│ 12 KB/s         3 KB/s               │
+└──────────────────────────────────────┘
+┌──────────────────────────────────────┐
+│ Account                              │
+│ [ Mobile number / username ]         │
+│ [ Password                 👁 ]      │
+└──────────────────────────────────────┘
+┌──────────────────────────────────────┐
+│ Auto connect                   [on]  │
+│ Runs in the background               │
+└──────────────────────────────────────┘
+Last action: Online · just now
 ```
 
-The saved status and last result are visible below the buttons. The app saves
-the mobile number/password in `EncryptedSharedPreferences` backed by the
-Android Keystore.
+Account edits save automatically after 500 ms. The main button is
+**Connect now** until the portal session is connected, then **Log out**.
+Wi-Fi name and signal percentage appear after **Enable Wi-Fi details** is
+allowed; without it the card says **Campus Wi-Fi** and still shows the IP,
+band, latency, loss, throughput, and link speed.
 
 ## 2. First failure: DNS before login
 
@@ -171,11 +195,11 @@ notification.
 On the live network the old failure no longer appears, and the connection is
 reported as soon as the portal finishes.
 
-## 7. Logout (1.3)
+## 7. Logout
 
-Tap **LOG OUT AND STOP AUTO-LOGIN** and confirm. The app:
+With the portal connected, tap **Log out** and confirm. The app:
 
-1. turns the background switch off;
+1. turns Auto connect off;
 2. stops the foreground service;
 3. opens a fresh portal session through `1.254.254.254`;
 4. binds the fresh `JSESSIONID` with `newlogin.do`;
@@ -190,9 +214,9 @@ Logged out
 ```
 
 `Logged out` is only written after the verification probe sees a non-`204`
-response, so it is not just “the request was sent”. Auto-login remains off and
-the foreground notification is removed. Tap **SAVE AND START** to sign in and
-enable the background service again.
+response, so it is not just “the request was sent”. Auto connect remains off
+and the foreground notification is removed. Turn **Auto connect** back on or
+tap **Connect now** to sign in again.
 
 ## 8. Two-session limit (1.4)
 
@@ -228,33 +252,79 @@ A direct self-care cookie produced `302 http://1.254.254.254?N=...` and did
 `portal did not close session ... (HTTP 302)`, that is the verification
 correctly refusing a false success; refresh the list and try again.
 
+## 8.5 1.5 dashboard and EPERM retest
+
+The 1.5 release was installed over the existing 1.4 install:
+
+```bash
+adb install -r dist/CURAJ-AutoLogin-1.5.apk
+```
+
+The version stayed at the saved account (no re-entry was needed). On campus
+Wi-Fi with mobile data enabled, the service logged:
+
+```
+AutoLoginService: attempt network=144
+AutoLoginService: login ok=true: already online
+```
+
+and the dashboard showed live values:
+
+| field | observed |
+|---|---|
+| Wi-Fi IP | `10.50.13.252` |
+| band | `2.4 GHz` |
+| signal | `75%  -66 dBm` (after permission; test run also showed `-77 dBm`) |
+| latency | `182–760 ms` (five HTTP probes; varies on the campus AP) |
+| loss | `0%  (5 probes)` |
+| link speed | `39 Mbps` |
+| download / upload | updated every 5 s from `TrafficStats` |
+
+The main button changed from **Connect now** to a red **Log out** while
+connected. Tapping **Log out** cleared Auto connect and the session; the
+button returned to **Connect now**. The nearby-Wi-Fi permission could not be
+granted over `adb` (`SecurityException` for the shell UID), so the final SSID
+prompt and the session-sheet close pass must be done through the app UI.
+
 ## 9. What to test manually
 
-1. Open the app while on campus Wi-Fi. Tap **TEST LOGIN NOW**.
+1. Open the app while on campus Wi-Fi. Tap **Connect now**.
    * Fresh session → “Online”.
    * Already online → “Online (already signed in)”.
+   * Connected → the button says **Log out**.
 2. Turn Wi-Fi off and on; the service should recover without opening the app.
 3. Reboot the phone; `BootReceiver` restarts the service.
 4. Tap **Login now** on the notification to bypass the failure backoff.
-5. Tap **Pause** to stop automatic login; **Run in background** and
-   **SAVE AND START** to re-enable it.
-6. Tap **LOG OUT AND STOP AUTO-LOGIN**, confirm, and check that the app records
-   **Logged out**, the switch is off, and the service notification disappears.
-   The portal page should be back on the next Wi-Fi request.
-7. Tap **Sessions** and confirm the list matches the portal’s two-session
-   table. Do not close the session you are using unless you want to reconnect.
-8. Allow battery optimisation exemption if the OEM kills the service:
-   **ALLOW BACKGROUND (BATTERY OPTIMISATION)**.
+5. Tap **Pause** to stop automatic login; turn **Auto connect** back on in the
+   app to re-enable it.
+6. Tap **Log out**, confirm, and check that the app records **Logged out**, the
+   switch is off, and the service notification disappears. The portal page
+   should be back on the next Wi-Fi request.
+7. Tap **Enable Wi-Fi details** in the Network card, allow the prompt, and
+   confirm the SSID and signal percentage appear. Deny/reinstall to confirm
+   login still works without it.
+8. Tap **Sessions** and confirm the sheet shows a spinner while loading and
+   the list matches the portal’s two-session table. Close the session you are
+   not using; the row spinner should run, the sheet should refresh itself, and
+   auto-connect should retry. Do not close the session you are using unless you
+   want to reconnect.
+9. Allow battery optimisation exemption if the OEM kills the service:
+   **three-dot menu → Battery optimisation**.
+10. Test with mobile data on and off, and toggle Wi-Fi, to confirm there is no
+    `EPERM` in logcat and no credentials go out over mobile data.
 
 ## 10. Notes
 
 * The tested 1.3 APK is versionCode 4, SHA-256
   `879d23fb068e2a9c5d401974f9460cb169ab2a4bec3c583cc32313ce3ae5a6dd`.
-* The 1.4 release APK is versionCode 5, SHA-256
-  `58883579c95cb55b15c5fd10a09209e1c607125f4ce78b1bcdef0c3eba4b7eb8`
-  (debug: `eb9a884cb57280f90c000fad308844cf755d9ab09387c37fda56fa4509bf21cd`).
-* The app is a debug-signed APK. Android may show “unknown app” warnings when
-  installing by `adb`; that is expected.
+* The 1.4 release APK was versionCode 5, SHA-256
+  `58883579c95cb55b15c5fd10a09209e1c607125f4ce78b1bcdef0c3eba4b7eb8`.
+* The 1.5 release APK is versionCode 6, SHA-256
+  `f13c37387bcca49602e066c6c7855907b25c0284234a8b64194967c5120914a9`.
+  The distributed APK is release-signed; the debug variant is only for local
+  development.
+* Android may show “unknown app” warnings when installing a release APK by
+  `adb`; that is expected for a direct-distribution build.
 * The portal is plain HTTP. The credentials are sent over the campus LAN in
   cleartext, which is a property of the portal, not the app. Use a password
   that is not reused elsewhere.
