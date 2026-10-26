@@ -26,20 +26,19 @@ reference and will not run.
 
 ---
 
-## 1. GitHub Actions (recommended)
+## 1. GitHub Actions (reference only; disabled here)
 
-### 1.1 Put the project on GitHub
+### 1.1 Put a fresh copy on GitHub
 
-The project is already a git repository. From `~/curaj-wifi`:
+This project is already a git repository. The commands below are only for a
+new copy; do not run `git init` in the existing checkout.
 
 ```bash
 cd ~/curaj-wifi
-git init
-git add .
-git commit -m "CURAJ campus auto-login"
+git status --short
 ```
 
-Create an empty **private** repository on GitHub, then:
+Create an empty repository on GitHub, then:
 
 ```bash
 git remote add origin git@github.com:<you>/curaj-wifi.git
