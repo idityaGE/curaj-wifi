@@ -28,6 +28,15 @@ POST http://122.252.242.93/userportal/newlogin.do
      → {"errorKey":"success","errorMessage":"success_net"}
 ```
 
+> **Network change (observed 2026-10-27):** the gateway Squid now rejects
+> *origin-form* plain-HTTP requests (`GET /path HTTP/1.1` + `Host:`) with
+> `400 ERR_INVALID_URL` **even for authenticated clients**, while proxying
+> *proxy-form/absolute-URI* requests (`GET http://host/path HTTP/1.1`)
+> normally. Pre-auth both forms still reach the splash page. So the online
+> check must use the absolute-URI form (both clients do since 1.6.1); see
+> [§10.1](#101-discovery--interception) and
+> [9.12 in ANDROID-ARCHITECTURE](ANDROID-ARCHITECTURE.md#912-authenticated-device-looked-blocked-forever-161).
+
 The only non-obvious parts are:
 
 1. **Route binding.** A second default route (USB tether) silently stole every
@@ -501,7 +510,7 @@ instead of treating one failed probe as fatal.
 
 | method | URL | notes |
 |---|---|---|
-| `GET` | `http://connectivitycheck.gstatic.com/generate_204` | `204` = online; `200` + HTML = captive |
+| `GET` | `http://connectivitycheck.gstatic.com/generate_204` | `204` = online; `200` + HTML = captive. **Send as absolute URI** (`GET http://connectivitycheck.gstatic.com/generate_204 HTTP/1.1`): since 2026-10-27 the Squid answers origin-form requests with `400 ERR_INVALID_URL` even post-auth |
 | `GET` | `http://10.50.0.1:3128` | Squid; transparent proxy for HTTP |
 | `GET` | `http://1.254.254.254/` | NAS splash, works online and offline |
 | `GET` | `http://1.254.254.254/login` | same splash |

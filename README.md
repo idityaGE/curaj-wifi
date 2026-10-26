@@ -24,6 +24,7 @@ Everything here was derived from live traffic on `CURAJ CAMPUS CONNECT`
 | [docs/ANDROID-TEST.md](docs/ANDROID-TEST.md) | live test on Android 16: install, DNS probe failure/fix, successful login, Wi-Fi reconnect, duplicate-auth race, logout, session limit |
 | [docs/SENTRY.md](docs/SENTRY.md) | error/tracing setup, credential scrubbing, local DSN/token configuration, and verification |
 | [docs/RELEASE-NOTES-1.6.md](docs/RELEASE-NOTES-1.6.md) | 1.6 highlights, install/upgrade notes, checksum, and verification status |
+| [docs/RELEASE-NOTES-1.6.1.md](docs/RELEASE-NOTES-1.6.1.md) | 1.6.1 patch notes: online-check fix for the gateway Squid, checksum, verification status |
 | [docs/SESSION-MANAGEMENT.md](docs/SESSION-MANAGEMENT.md) | the two-session limit, self-care login, why the splash context cookie is required, and verified close semantics |
 
 ---
@@ -242,10 +243,11 @@ Config keys:
 ## 5. Android
 
 Source: `android/` (Kotlin, minSdk 26, targetSdk 35). Current APK is
-**1.6** (versionCode 7). The 1.6 release keeps the Material 3 dashboard,
-live network monitor, session sheet, and one-tap log out, and adds Auto
-connect on by default plus Sentry crash, error, and performance reporting.
-Source context is uploaded for release builds.
+**1.6.1** (versionCode 8). The 1.6.1 patch fixes online detection after the
+campus gateway Squid began rejecting browser-style HTTP; the 1.6 release
+added Auto connect on by default plus Sentry crash, error, and performance
+reporting, and keeps the Material 3 dashboard, live network monitor, session
+sheet, and one-tap log out. Source context is uploaded for release builds.
 
 ```
 app/src/main/java/in/ac/curaj/autologin/
@@ -279,11 +281,11 @@ adb install app/build/outputs/apk/debug/app-debug.apk
 
 The signed release APK is at
 `android/app/build/outputs/apk/release/app-release.apk`. A prepared copy is in
-`dist/CURAJ-AutoLogin-1.6.apk`
-(SHA-256 `eb647a9254cf54eaa9fdef234662a047c2743388ceb284ce2a516d8b24faca44`);
+`dist/CURAJ-AutoLogin-1.6.1.apk`
+(SHA-256 `906887ea15e30c153cff9cd3fd84528514f6215aa86be05448f2fa17ee835faf`);
 see [docs/RELEASE-BUILD.md](docs/RELEASE-BUILD.md) for the keystore,
-verification, and distribution steps. Users upgrading from 1.5 can install
-1.6 over it (`adb install -r`) without losing the saved account.
+verification, and distribution steps. Users upgrading from 1.5 or 1.6 can
+install 1.6.1 over it (`adb install -r`) without losing the saved account.
 
 GitHub Actions is intentionally disabled for this repository, so builds are
 made locally with the included wrapper. See

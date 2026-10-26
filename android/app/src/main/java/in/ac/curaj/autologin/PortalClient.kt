@@ -7,7 +7,9 @@ import io.sentry.Sentry
 import io.sentry.SentryLevel
 import org.json.JSONObject
 import java.io.IOException
+import java.io.InputStream
 import java.net.HttpURLConnection
+import java.net.InetSocketAddress
 import java.net.URI
 import java.net.URL
 import java.net.URLDecoder
@@ -31,6 +33,14 @@ import java.net.URLEncoder
  * until after login, even though the host is reachable. The portal intercepts
  * any HTTP request, including this one, and answers with its meta-refresh
  * splash page.
+ *
+ * The authoritative online check (isOnline) additionally sends the request as
+ * a proxy-form (absolute-URI) target on a raw socket. The campus gateway
+ * Squid answers browser-style origin-form requests ("GET /generate_204" +
+ * Host:) with 400 ERR_INVALID_URL even for authenticated clients, which would
+ * make an online device look blocked forever. The same Squid proxies
+ * proxy-form requests normally and still intercepts them with the splash page
+ * pre-auth, so only that form distinguishes online/blocked in both states.
  */
 object PortalClient {
     private const val TAG = "PortalClient"
@@ -42,13 +52,21 @@ object PortalClient {
     private const val CURRENT_SESSIONS_PATH =
         "/userportal/currentSessions.do?from=Home"
 
+    private const val PROBE_TIMEOUT_MS = 6000
+    private const val MAX_HEAD_CHARS = 32_000
+
+    /** Matches "HTTP/1.x <code>" in the first line of a response head. */
+    private val STATUS_LINE = Regex("""(?i)HTTP/\d(?:\.\d)?\s+(\d{3})""")
+
     /** Google generate_204 endpoints by IP; tried in order, no DNS needed. */
-    private val CHECK_URLS = listOf(
-        "http://142.251.150.120/generate_204",
-        "http://142.250.183.36/generate_204",
-        "http://142.250.72.196/generate_204",
-        "http://142.251.32.14/generate_204"
+    private val CHECK_IPS = listOf(
+        "142.251.150.120",
+        "142.250.183.36",
+        "142.250.72.196",
+        "142.251.32.14"
     )
+
+    private val CHECK_URLS = CHECK_IPS.map { "http://$it/generate_204" }
 
     /**
      * Credentials are only ever posted to the real campus portal. Without
@@ -146,13 +164,16 @@ object PortalClient {
             return Result(false, "no credentials saved")
         }
 
+        // The online check is authoritative and independent of the
+        // origin-form probe: post-auth the gateway Squid answers origin-form
+        // HTTP with 400, which would look like a captive portal here.
+        if (isOnline(network)) return Result(true, "already online")
+
         val first = try {
             probe(network)
         } catch (e: Exception) {
             return Result(false, "probe failed: ${e.message}")
         }
-
-        if (first.code == 204) return Result(true, "already online")
 
         val portal = findPortal(first, network)
             ?: return Result(false, "no captive portal (HTTP ${first.code})")
@@ -260,7 +281,7 @@ object PortalClient {
                 Log.i(TAG, "portal is already authenticating this IP; waiting")
                 repeat(6) {
                     Thread.sleep(1000)
-                    if (runCatching { probe(network).code }.getOrNull() == 204) {
+                    if (isOnline(network)) {
                         return Result(true, "logged in")
                     }
                 }
@@ -281,23 +302,20 @@ object PortalClient {
                 }
                 runCatching { request(network, "http://1.254.254.254/logout") }
                 Thread.sleep(1500)
-                val code = runCatching { probe(network).code }.getOrNull()
-                if (code == 204) return Result(true, "already online")
+                if (isOnline(network)) return Result(true, "already online")
                 return loginOnce(ctx, network, user, pass, depth + 1)
             }
 
             return Result(false, "rejected: $reason")
         }
 
-        // 4. the portal sometimes answers before the NAS opens the gate
+        // 4. the portal sometimes answers before the NAS opens the gate;
+        // the NAS can also blackhole briefly while switching, and isOnline
+        // tolerates probe failures by falling through to the next endpoint.
         repeat(6) {
             Thread.sleep(1500)
-            try {
-                if (probe(network).code == 204) {
-                    return Result(true, "logged in")
-                }
-            } catch (_: Exception) {
-                // keep polling
+            if (isOnline(network)) {
+                return Result(true, "logged in")
             }
         }
         return Result(false, "portal said success but internet is still blocked")
@@ -371,8 +389,9 @@ object PortalClient {
 
         repeat(4) {
             Thread.sleep(1000)
-            val code = runCatching { probe(network).code }.getOrNull()
-            if (code != null && code != 204) return Result(true, "logged out")
+            // isOnline (not the origin-form probe): a 400 from the gateway
+            // Squid must not be mistaken for "logged out".
+            if (!isOnline(network)) return Result(true, "logged out")
         }
         return Result(false, "could not verify logout")
     }
@@ -744,6 +763,66 @@ object PortalClient {
             }
         }
         throw last ?: IOException("no probe endpoint")
+    }
+
+    /**
+     * Authoritative online check: 204 from a Google generate_204 endpoint.
+     *
+     * Sent as a proxy-form (absolute-URI) request target on a raw socket
+     * bound to the Wi-Fi network. The campus gateway Squid answers
+     * browser-style origin-form requests ("GET /generate_204" + Host:) with
+     * 400 ERR_INVALID_URL even for authenticated clients, which would make
+     * an online device look blocked forever; the same Squid proxies
+     * proxy-form requests normally and still intercepts them with the splash
+     * page pre-auth, so this form distinguishes the two states in both auth
+     * states. Only the response head is read - the status line carries
+     * everything this check needs (a 204 has no body, and the pre-auth
+     * splash body is parsed by findPortal from probe(), not here).
+     */
+    fun isOnline(network: Network): Boolean {
+        for (host in CHECK_IPS) {
+            try {
+                if (proxyFormStatus(network, host) == 204) return true
+            } catch (e: Exception) {
+                Log.w(TAG, "online check via $host failed: ${e.message}")
+            }
+        }
+        return false
+    }
+
+    private fun proxyFormStatus(network: Network, host: String): Int {
+        val socket = network.socketFactory.createSocket()
+        try {
+            socket.tcpNoDelay = true
+            socket.connect(InetSocketAddress(host, 80), PROBE_TIMEOUT_MS)
+            socket.soTimeout = PROBE_TIMEOUT_MS
+            socket.getOutputStream().write(
+                ("GET http://connectivitycheck.gstatic.com/generate_204 " +
+                    "HTTP/1.1\r\n" +
+                    "Host: connectivitycheck.gstatic.com\r\n" +
+                    "User-Agent: CURAJ-AutoLogin/1.0 (Android)\r\n" +
+                    "Accept: */*\r\n" +
+                    "Connection: close\r\n\r\n").toByteArray()
+            )
+            val head = readResponseHead(socket.getInputStream())
+            return STATUS_LINE.find(head)?.groupValues?.get(1)?.toInt()
+                ?: throw IOException("unparseable probe response")
+        } finally {
+            runCatching { socket.close() }
+        }
+    }
+
+    /** Read up to the blank line that ends the HTTP response head. */
+    private fun readResponseHead(input: InputStream): String {
+        val head = StringBuilder()
+        val chunk = ByteArray(4096)
+        while (head.length < MAX_HEAD_CHARS) {
+            val n = input.read(chunk)
+            if (n < 0) break
+            head.append(String(chunk, 0, n, Charsets.ISO_8859_1))
+            if (head.contains("\r\n\r\n")) break
+        }
+        return head.toString()
     }
 
     private fun request(

@@ -747,6 +747,46 @@ both enabled.
 
 ---
 
+### 9.12 Authenticated device looked "blocked" forever (1.6.1)
+
+**Symptom**
+
+The portal answered `success_net` but the app reported *"portal said success
+but internet is still blocked"*, and a device that was already online never
+read as "already online". On Linux the same condition showed as
+`blocked via <iface> (probe HTTP 400)` while real HTTPS traffic flowed fine.
+
+**Cause**
+
+The gateway Squid started rejecting browser-style *origin-form* plain-HTTP
+requests (`GET /generate_204 HTTP/1.1` + `Host:` header — what
+`HttpURLConnection`, curl, and browsers send) with `400 ERR_INVALID_URL`, even
+for authenticated clients. Post-auth traffic is still intercepted, so
+`generate_204` could never return `204` again through that path. Worse,
+logout verification treated any non-204 (including this 400) as proof of a
+successful logout.
+
+**Diagnosis** (live, on the affected network)
+
+* pre-auth, origin-form → `200` lighttpd splash (as documented elsewhere);
+  absolute-URI → also the splash
+* post-auth, origin-form → `400` `Server: squid/7.3-VCS`
+  `X-Squid-Error: ERR_INVALID_URL`; absolute-URI → `204`
+  (`X-Squid-Error: 204:ERR_DENY_204`), real HTTPS → real responses
+
+**Fix**
+
+* New `isOnline()`: raw socket from `network.socketFactory` (pinned to Wi-Fi),
+  proxy-form request target
+  `GET http://connectivitycheck.gstatic.com/generate_204 HTTP/1.1`,
+  response head only (the status line is all an online check needs).
+* Every online check — entry "already online", in-progress wait, post-login
+  verification, logout verification — now calls `isOnline()`.
+* The origin-form `probe()` remains only for splash/portal discovery, where
+  it works pre-auth and never gates an online decision.
+
+---
+
 ## 10. Build, install, and test
 
 ### Build
@@ -842,6 +882,7 @@ Approximate evolution from the build/test notes:
 | 1.4 | 5 | two-session limit detection, session list/logout with splash-context cookie, Manage sessions notification and retry |
 | 1.5 | 6 | Material 3 redesign, live network dashboard (SSID/signal/IP/band/latency/loss/throughput/link), auto-saving account fields, dynamic Connect now → Log out, session sheet with spinner/auto-refresh, shared `NetworkMonitor` and fresh-network `EPERM` retry |
 | 1.6 | 7 | Auto connect on by default and starts after first credential save; Sentry crash/performance monitoring with source context, portal transactions, EPERM warning events, and credential/PII scrubbing |
+| 1.6.1 | 8 | online checks moved to a proxy-form raw-socket check (`isOnline`) because the gateway Squid rejects origin-form HTTP with 400 even for authenticated clients; logout verification no longer mistakes that 400 for success |
 
 ---
 

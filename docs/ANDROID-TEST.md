@@ -292,6 +292,16 @@ The 1.6 source changes make **Auto connect** default on and add Sentry. The
 debug/release builds compile, but the phone was disconnected when these checks
 were prepared. Do them with the cable or wireless debugging connected:
 
+> **1.6.1 addendum:** these checks still apply (adjust the release string to
+> `in.ac.curaj.autologin@1.6.1+8`). 1.6.1 additionally changes the online
+> check to a proxy-form raw-socket request (see
+> [9.12 in ANDROID-ARCHITECTURE](ANDROID-ARCHITECTURE.md#912-authenticated-device-looked-blocked-forever-161)).
+> With the phone on campus Wi-Fi, confirm: while online the app reports
+> "already online" on **Connect now**, after a real login it reports
+> **Online**, and **Log out** verification only succeeds when the NAS gate
+> actually closed (a `400` from the gateway Squid must not be read as
+> "logged out").
+
 1. **Fresh install default**
    - Uninstall the app, install 1.6, and open it.
    - Confirm **Auto connect** is already on before any credentials are entered.

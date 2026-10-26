@@ -45,15 +45,16 @@ dist/INSTALL.txt
 | item | value |
 |---|---|
 | package | `in.ac.curaj.autologin` |
-| version | 1.6 (versionCode 7) |
-| size | 9.3 MB (9,686,360 bytes) |
-| SHA-256 | `eb647a9254cf54eaa9fdef234662a047c2743388ceb284ce2a516d8b24faca44` |
+| version | 1.6.1 (versionCode 8) |
+| size | 9.3 MB (9,686,364 bytes) |
+| SHA-256 | `906887ea15e30c153cff9cd3fd84528514f6215aa86be05448f2fa17ee835faf` |
 | APK signature | APK Signature Scheme v2, verified |
 | certificate SHA-256 | `55da02f424dbf6a4dfd9521b236c1bba4f598fe23db477afceea82fa894ac092` |
 
 The code carries the tested 1.3 login/logout path, the 1.4 session management,
-the 1.5 Material 3 dashboard and `EPERM` retry, and the 1.6 Auto connect and
-Sentry work. Release builds are `debuggable=false` and omit the debug-only
+the 1.5 Material 3 dashboard and `EPERM` retry, the 1.6 Auto connect and
+Sentry work, and the 1.6.1 proxy-form online check. Release builds are
+`debuggable=false` and omit the debug-only
 **Send test event** menu.
 
 Clean build, lint, unit-test tasks, APK signature, manifest, embedded DSN, and
@@ -189,7 +190,7 @@ Expected:
 ```
 Verifies
 Verified using v2 scheme (APK Signature Scheme v2): true
-package: name='in.ac.curaj.autologin' versionCode='7' versionName='1.6'
+package: name='in.ac.curaj.autologin' versionCode='8' versionName='1.6.1'
 application-label:'CURAJ Auto Login'
 ```
 
@@ -200,9 +201,9 @@ Then prepare the distribution copy:
 
 ```bash
 mkdir -p ~/curaj-wifi/dist
-cp "$APK" ~/curaj-wifi/dist/CURAJ-AutoLogin-1.6.apk
+cp "$APK" ~/curaj-wifi/dist/CURAJ-AutoLogin-1.6.1.apk
 cd ~/curaj-wifi/dist
-sha256sum CURAJ-AutoLogin-1.6.apk > SHA256SUMS.txt
+sha256sum CURAJ-AutoLogin-1.6.1.apk > SHA256SUMS.txt
 ```
 
 ---
@@ -269,14 +270,14 @@ locally, then tag and publish it with `gh`:
 
 ```bash
 cd ~/curaj-wifi
-git tag -a v1.6 -m "CURAJ Auto Login 1.6"
-git push origin v1.6
-gh release create v1.6 \
-  dist/CURAJ-AutoLogin-1.6.apk \
+git tag -a v1.6.1 -m "CURAJ Auto Login 1.6.1"
+git push origin v1.6.1
+gh release create v1.6.1 \
+  dist/CURAJ-AutoLogin-1.6.1.apk \
   dist/SHA256SUMS.txt \
   dist/INSTALL.txt \
-  --title "CURAJ Auto Login 1.6" \
-  --notes-file docs/RELEASE-NOTES-1.6.md
+  --title "CURAJ Auto Login 1.6.1" \
+  --notes-file docs/RELEASE-NOTES-1.6.1.md
 ```
 
 The release tag must point at the commit whose `versionCode` and `versionName`

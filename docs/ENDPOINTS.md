@@ -18,13 +18,20 @@ server                : Apache/2.2.15 (CentOS) + Tomcat/5.5.23
 ## 1. Pre-auth probe
 
 ```http
-GET /generate_204 HTTP/1.1
+GET http://connectivitycheck.gstatic.com/generate_204 HTTP/1.1
 Host: connectivitycheck.gstatic.com
 ```
 
 * `204 No Content` → authenticated.
 * `200` + HTML containing a meta refresh → captive.
 * `302` + `Location: http://1.254.254.254` → captive.
+
+> **Changed 2026-10-27 (post-auth):** with an *origin-form* request line
+> (`GET /generate_204`), an authenticated device now gets
+> `400 ERR_INVALID_URL` from the gateway Squid (`squid/7.3-VCS`). Use the
+> *proxy-form* (absolute-URI) request line shown above: it returns the splash
+> page pre-auth and `204` post-auth. Both clients (Linux + Android) send the
+> probe this way since 1.6.1.
 
 The client must connect through the Wi-Fi interface
 (`SO_BINDTODEVICE` / Android `Network`), otherwise a tether/mobile default
