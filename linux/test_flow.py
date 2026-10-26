@@ -94,7 +94,15 @@ class Handler(BaseHTTPRequestHandler):
     def _cookie(self) -> str:
         return self.headers.get("Cookie") or ""
 
+    def _normalize_path(self) -> None:
+        """Accept proxy-form (absolute-URI) request targets from the client."""
+        if self.path.startswith(("http://", "https://")):
+            split = urllib.parse.urlsplit(self.path)
+            self.path = split.path + (f"?{split.query}" if split.query
+                                      else "") or "/"
+
     def do_GET(self):
+        self._normalize_path()
         if self.path.startswith("/generate_204"):
             if STATE["auth"]:
                 return self._send(204)
@@ -148,6 +156,7 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(404)
 
     def do_POST(self):
+        self._normalize_path()
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length).decode()
 

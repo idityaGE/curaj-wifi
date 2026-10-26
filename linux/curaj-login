@@ -26,6 +26,12 @@ Every socket in this client is bound to the Wi-Fi device with
 SO_BINDTODEVICE.  Without that, a tethered phone / second default route
 wins the route lookup and the portal looks unreachable (or a stale
 "online" check gives a false positive).
+
+Probes use a proxy-form (absolute-URI) request target.  The gateway Squid
+intercepts all plain HTTP and, once a device is authenticated, rejects
+browser-style origin-form requests with 400 ERR_INVALID_URL while proxying
+absolute-URI requests normally - so "GET http://host/path HTTP/1.1" is the
+only form that yields 204 for the online check in both auth states.
 """
 
 from __future__ import annotations
@@ -131,7 +137,8 @@ def http_request(url: str, device: str | None, *, method: str = "GET",
                  body: bytes | None = None,
                  headers: dict[str, str] | None = None,
                  timeout: float = 8.0,
-                 max_body: int = 1 << 20) -> HttpResponse:
+                 max_body: int = 1 << 20,
+                 absolute_uri: bool = False) -> HttpResponse:
     parts = urllib.parse.urlsplit(url)
     if parts.scheme != "http":
         raise ValueError(f"only http:// is supported for the portal: {url}")
@@ -141,6 +148,13 @@ def http_request(url: str, device: str | None, *, method: str = "GET",
     path = parts.path or "/"
     if parts.query:
         path += "?" + parts.query
+    if absolute_uri:
+        # Proxy-form request target. The campus Squid answers origin-form
+        # requests ("GET /x HTTP/1.1" + Host:) with 400 ERR_INVALID_URL once
+        # the device is authenticated, which would make every post-login
+        # verification look "blocked". Sending the absolute URI works in
+        # both auth states (pre-auth it still yields the splash page).
+        path = f"http://{parts.netloc}{path}"
 
     hdrs = {
         "Host": parts.netloc,
@@ -210,13 +224,17 @@ def iface_for_ssid(ssid: str) -> str | None:
 def probe(device: str | None) -> HttpResponse:
     """204 = authenticated, anything else = intercepted/blocked.
 
-    One retry absorbs the short blackhole while the NAS tears a session down.
+    Sent as a proxy-form (absolute-URI) request: after login the gateway
+    Squid rejects origin-form requests with 400 ERR_INVALID_URL, which would
+    make an authenticated device look blocked forever. One retry absorbs the
+    short blackhole while the NAS tears a session down.
     """
     last: OSError | None = None
-    for _ in range(2):
+    for _ in range(3):
         try:
             return http_request(CHECK_URL, device,
-                                headers={"Host": CHECK_HOST}, timeout=6.0)
+                                headers={"Host": CHECK_HOST}, timeout=6.0,
+                                absolute_uri=True)
         except OSError as exc:
             last = exc
             time.sleep(0.5)
@@ -253,6 +271,10 @@ def find_portal(resp: HttpResponse, device: str | None) -> str | None:
             except OSError:
                 pass
         return url
+    # If response contains portal host even if regex missed, try to find it
+    m = re.search(r"(http://122\.252\.242\.93[^\s\"'<>]+)", resp.text)
+    if m:
+        return m.group(1).replace(" ", "%20")
     return None
 
 
@@ -551,8 +573,13 @@ def login(config: dict, device: str, *, verbose: bool = True,
     if not portal:
         if first.status == 204:
             return True, "already online (no portal page to post to)"
-        return False, (f"no captive portal found "
-                       f"(probe HTTP {first.status} from {device})")
+        # Fallback: NAS splash often still works when captive check is broken (e.g. HTTP 400)
+        portal = portal_url_any(device)
+        if not portal and first.text:
+            # Try to find portal URL directly in response body
+            m = re.search(r"(https?://122\.252\.242\.93[^\s\"'<>]+/userportal/[^\s\"'<>]+)", first.text)
+            if m:
+                portal = m.group(1).replace(" ", "%20")
 
     log(f"portal: {portal}")
     if not trusted_portal(portal, config):
@@ -647,9 +674,13 @@ def login(config: dict, device: str, *, verbose: bool = True,
             except OSError:
                 pass
         time.sleep(2.0)
-        if probe(device).status == 204:
+        try:
+            r = probe(device)
+        except OSError:
+            r = None
+        if r is not None and r.status == 204:
             return True, "logged in (stale session cleared)"
-        portal2 = find_portal(probe(device), device)
+        portal2 = find_portal(r, device) if r is not None else None
         if portal2:
             return login(config, device, verbose=verbose,
                          force=False, _depth=_depth + 1)
@@ -659,11 +690,35 @@ def login(config: dict, device: str, *, verbose: bool = True,
                or resp.text.strip()[:200] or f"HTTP {resp.status}")
         return False, f"login rejected: {msg}"
 
-    # 4. verify that the NAS actually let traffic through
+    # 4. verify that the NAS actually let traffic through.  The NAS can
+    # blackhole briefly right after a session change, so tolerate probes
+    # that time out and keep polling.
     for _ in range(6):
         time.sleep(1.5)
-        if probe(device).status == 204:
-            return True, "logged in"
+        try:
+            if probe(device).status == 204:
+                return True, "logged in"
+        except OSError:
+            continue
+    # If verification fails but portal said success, try a clean logout/retry once
+    if _depth < 1:
+        log("portal said success but internet still blocked; attempting clean logout and retry")
+        try:
+            logout(device, config)
+        except Exception:
+            pass
+        time.sleep(3.0)
+        try:
+            r = probe(device)
+        except OSError:
+            r = None
+        if r is not None and r.status == 204:
+            return True, "logged in (after cleanup)"
+        portal2 = ((find_portal(r, device) if r is not None else None)
+                   or portal_url_any(device))
+        if portal2:
+            return login(config, device, verbose=verbose,
+                         force=False, _depth=_depth + 1)
     return False, "portal said success but internet is still blocked"
 
 
