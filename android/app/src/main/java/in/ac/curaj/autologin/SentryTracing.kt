@@ -9,6 +9,7 @@ import io.sentry.Sentry
  */
 object SentryTracing {
     inline fun <T> trace(name: String, operation: String, block: () -> T): T {
+        if (!Sentry.isEnabled()) return block()
         val transaction = Sentry.startTransaction(name, operation)
         transaction.setTag("portal.operation", name.removePrefix("portal."))
         return try {
