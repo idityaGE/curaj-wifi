@@ -22,6 +22,7 @@ Everything here was derived from live traffic on `CURAJ CAMPUS CONNECT`
 | [docs/LOCAL-BUILD.md](docs/LOCAL-BUILD.md) | build the APK locally with JDK 17 + Android command-line tools, no Android Studio |
 | [docs/RELEASE-BUILD.md](docs/RELEASE-BUILD.md) | create/back up a release key, build a signed production APK, verify it, and distribute it |
 | [docs/ANDROID-TEST.md](docs/ANDROID-TEST.md) | live test on Android 16: install, DNS probe failure/fix, successful login, Wi-Fi reconnect, duplicate-auth race, logout, session limit |
+| [docs/SENTRY.md](docs/SENTRY.md) | error/tracing setup, credential scrubbing, local DSN/token configuration, and verification |
 | [docs/SESSION-MANAGEMENT.md](docs/SESSION-MANAGEMENT.md) | the two-session limit, self-care login, why the splash context cookie is required, and verified close semantics |
 
 ---
@@ -317,8 +318,9 @@ How it behaves:
   details are allowed), IP, band, signal percentage/RSSI, HTTP latency and
   packet loss from five probes, app download/upload throughput, and the
   negotiated link speed. It auto-refreshes every five seconds.
-* Account fields save automatically after a short debounce. The **Auto
-  connect** switch turns the foreground service on or off; there is no Save
+* Account fields save automatically after a short debounce. **Auto connect**
+  starts on for fresh installs and starts the foreground service as soon as
+  both credentials are valid; the switch can still pause it. There is no Save
   button.
 * **Connect now** runs a one-shot login from the app even when auto connect is
   off. When the portal is connected, the same button becomes **Log out**.
@@ -339,7 +341,10 @@ How it behaves:
   select is closed, then auto-login retries.
 * Failed attempts back off 1 → 2 → 4 → 8 → 15 minutes, so a wrong password
   does not hammer the portal. **Login now** bypasses the backoff.
-* Credentials are encrypted with a Keystore master key.
+* Credentials are encrypted with a Keystore master key. Crash and performance
+  reports go to Sentry; request bodies, usernames, passwords, cookies, and
+  authorization headers are scrubbed before events leave the device. See
+  [docs/SENTRY.md](docs/SENTRY.md).
 * Cleartext HTTP is permitted only for the portal IPs and the connectivity
   check hosts (`res/xml/network_security_config.xml`).
 * On Android 12+ you may need to exempt the app from battery optimisation

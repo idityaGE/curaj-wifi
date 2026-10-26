@@ -3,6 +3,8 @@ package `in`.ac.curaj.autologin
 import android.content.Context
 import android.net.Network
 import android.util.Log
+import io.sentry.Sentry
+import io.sentry.SentryLevel
 import org.json.JSONObject
 import java.io.IOException
 import java.net.HttpURLConnection
@@ -113,6 +115,11 @@ object PortalClient {
         } catch (e: Exception) {
             if (isBindError(e)) {
                 Log.w(TAG, "network bind failed; service will re-resolve Wi-Fi", e)
+                Sentry.captureException(e) { scope ->
+                    scope.setLevel(SentryLevel.WARNING)
+                    scope.setTag("network.bind_error", "true")
+                    scope.setFingerprint(listOf("network-bind-error"))
+                }
                 Result(
                     false,
                     "Wi-Fi network is changing",

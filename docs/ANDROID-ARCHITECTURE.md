@@ -122,6 +122,8 @@ restore the session without the user opening a browser**.
 | `PortalClient` | probe, portal discovery, host pinning, login/logout HTTP, success verification | Android lifecycle, UI, notifications |
 | `Prefs` | encrypted credentials, enabled flag, last result/time | network or portal logic |
 | `BootReceiver` | restart the service after boot/app update when enabled and configured | retrying failed logins |
+| `CurajApp` | initialize Sentry and scrub credentials/PII before events leave the device | portal or UI logic |
+| `SentryTracing` | finish a transaction around each blocking portal operation | portal protocol logic |
 
 The split is intentional: `PortalClient` has no Android UI or service state, so
 the same flow can be exercised from the app, logcat, or a one-shot test without
@@ -133,13 +135,16 @@ starting the background watcher.
 
 ### 4.1 Where the service is started
 
-The service is started from exactly four places:
+The service is started from exactly five places:
 
-1. `MainActivity` when the user turns **Auto connect** on.
-2. `MainActivity.onCreate()` when the app opens and auto-login was already
-   enabled.
-3. `BootReceiver` after `BOOT_COMPLETED` or `MY_PACKAGE_REPLACED`.
-4. The notification’s **Login now** action (a user-initiated service start).
+1. `MainActivity` when the user turns **Auto connect** on with valid
+   credentials.
+2. `MainActivity` when the first valid credentials are saved while
+   **Auto connect** is on. Fresh installs now start with the switch on.
+3. `MainActivity.onCreate()` when the app opens and auto-login was already
+   enabled with both credentials present.
+4. `BootReceiver` after `BOOT_COMPLETED` or `MY_PACKAGE_REPLACED`.
+5. The notification’s **Login now** action (a user-initiated service start).
 
 It is **not** started from `NetworkCallback`. Android 12+ blocks foreground
 service starts from the background; receiving a Wi-Fi callback is not a valid
@@ -222,12 +227,13 @@ sending credentials again. If the session expired, the normal login flow runs.
 
 ### 4.5 Boot / app update
 
-`BootReceiver` checks two conditions before starting the service:
+`BootReceiver` checks three conditions before starting the service:
 
-* `Prefs.enabled` is true; and
-* a username is saved.
+* `Prefs.enabled` is true;
+* a username is saved; and
+* a password is saved.
 
-If either is missing it does nothing. This avoids a foreground service with no
+If any is missing it does nothing. This avoids a foreground service with no
 credentials and avoids restarting after the user explicitly paused auto-login.
 
 ### 4.6 Logout sequence
@@ -512,6 +518,7 @@ POST_NOTIFICATIONS
 RECEIVE_BOOT_COMPLETED
 NEARBY_WIFI_DEVICES          (runtime, API 33+, neverForLocation)
 ACCESS_FINE_LOCATION         (runtime, API 26–32 only)
+ACCESS_COARSE_LOCATION       (runtime with FINE on API 26–32)
 ```
 
 Notifications are the only runtime permission needed for login. Nearby Wi-Fi
@@ -520,6 +527,21 @@ the user taps **Enable Wi-Fi details**, and is used only for the dashboard’s
 SSID/signal display. The app does not request background location, phone
 state, or battery-optimisation permission. The menu opens the battery settings
 page instead of requesting `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`.
+
+### Sentry
+
+`CurajApp` initializes Sentry only when a DSN is configured. Before any event
+leaves the device:
+
+* request and user objects are removed;
+* extras and HTTP breadcrumbs with password/credential/cookie/authorization/
+  username keys are removed;
+* HTTP query strings are removed from breadcrumbs;
+* screenshots, view hierarchies, and default PII are disabled.
+
+The DSN lives in `~/.config/curaj-wifi/sentry.properties` (or `SENTRY_DSN`).
+The org auth token is read only from `SENTRY_AUTH_TOKEN` at build time and is
+not packaged into the APK. See [SENTRY.md](SENTRY.md).
 
 ### The unavoidable plaintext caveat
 
@@ -792,6 +814,8 @@ android/app/src/main/java/in/ac/curaj/autologin/
   PortalClient.kt        probe, discovery, host pinning, login/logout
   Prefs.kt               Keystore-backed encrypted preferences
   BootReceiver.kt        boot / package-replaced restart
+  CurajApp.kt            Sentry initialization and event scrubbing
+  SentryTracing.kt       portal transaction wrapper
 
 android/app/src/main/
   AndroidManifest.xml
@@ -816,6 +840,7 @@ Approximate evolution from the build/test notes:
 | 1.3 | 4 | duplicate-auth handling, transient retries, state-only notifications, logout button and real logout |
 | 1.4 | 5 | two-session limit detection, session list/logout with splash-context cookie, Manage sessions notification and retry |
 | 1.5 | 6 | Material 3 redesign, live network dashboard (SSID/signal/IP/band/latency/loss/throughput/link), auto-saving account fields, dynamic Connect now → Log out, session sheet with spinner/auto-refresh, shared `NetworkMonitor` and fresh-network `EPERM` retry |
+| 1.6 | 7 | Auto connect on by default and starts after first credential save; Sentry crash/performance monitoring with source context, portal transactions, EPERM warning events, and credential/PII scrubbing |
 
 ---
 
@@ -861,5 +886,6 @@ If `adb logcat` shows nothing, confirm the service is running:
 adb shell dumpsys activity services in.ac.curaj.autologin
 ```
 
-If it is not running, open the app once and turn **Auto connect** on; a
-force-stopped app is not restarted by Android until it is opened again.
+If it is not running, open the app once. Auto connect is on by default and the
+service starts once both credentials are saved; a force-stopped app is not
+restarted by Android until it is opened again.

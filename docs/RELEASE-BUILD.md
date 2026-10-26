@@ -55,6 +55,11 @@ The code is the tested 1.3 login/logout code plus the 1.4 session-management
 changes and the 1.5 Material 3 dashboard, network monitor, and `EPERM` retry.
 Only the build type and signing key differ from a debug build.
 
+The 1.6 source is built as a signed candidate (versionCode 7) but is not
+published until the on-device checks in
+[ANDROID-TEST.md](ANDROID-TEST.md#86-16-auto-connect-and-sentry-pending-on-device)
+pass. The 1.5 APK remains the current public release.
+
 ---
 
 ## 3. The release key
@@ -140,6 +145,20 @@ The APK appears at:
 app/build/outputs/apk/release/app-release.apk
 ```
 
+Sentry source-context upload is optional. To include it, export a Sentry org
+auth token for the build only:
+
+```bash
+export SENTRY_AUTH_TOKEN="..."
+./gradlew :app:assembleRelease
+```
+
+You can also put `authToken=...` in the mode-600
+`~/.config/curaj-wifi/sentry.properties` file instead of exporting it. Without
+a token, Gradle still builds a signed APK and skips source-context upload.
+Never commit the token. See [SENTRY.md](SENTRY.md) for the DSN file, privacy
+settings, and verification steps.
+
 If Gradle says it cannot find `storeFile`, check that the path inside
 `release-signing.properties` is absolute and that the `.jks` file exists.
 
@@ -197,15 +216,15 @@ On the phone:
    Store; that is expected for a sideloaded app.
 5. Open **CURAJ Auto Login**.
 6. Each person enters **their own** mobile number and portal password. The
-   fields save automatically.
+   fields save automatically. **Auto connect** starts on, so the background
+   service starts as soon as both fields are valid.
 7. Allow notifications.
-8. Turn on **Auto connect**.
-9. Optionally tap **Enable Wi-Fi details** to show the SSID and signal
+8. Optionally tap **Enable Wi-Fi details** to show the SSID and signal
    percentage; login works without it.
-10. Open the three-dot menu → **Battery optimisation** and set the app to
-    **Unrestricted / Don’t optimise**.
-11. On Xiaomi/Oppo/Vivo, also allow Autostart/background activity.
-12. Tap **Connect now** or wait for the service; when connected, the main
+9. Open the three-dot menu → **Battery optimisation** and set the app to
+   **Unrestricted / Don’t optimise**.
+10. On Xiaomi/Oppo/Vivo, also allow Autostart/background activity.
+11. Tap **Connect now** or wait for the service; when connected, the main
     button becomes **Log out**.
 
 The app has no credentials baked in. Everyone uses their own account.

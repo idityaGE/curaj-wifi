@@ -41,6 +41,7 @@ The service never sends credentials to a host other than
 | `POST_NOTIFICATIONS` | **runtime** (API 33+) | show the ongoing notification and its “Login now” / “Pause” actions | service still runs, but the notification is hidden from the shade and the actions are unavailable |
 | `NEARBY_WIFI_DEVICES` | **runtime** (API 33+), `neverForLocation` | optional: show the SSID and signal strength | login still works; the dashboard shows “Campus Wi-Fi” and omits signal details |
 | `ACCESS_FINE_LOCATION` | **runtime** (API 26–32 only) | optional: same dashboard details on older Android | login still works; the dashboard omits the SSID/signal |
+| `ACCESS_COARSE_LOCATION` | **runtime** with FINE on API 26–32 | Android 12 requires both to be requested together | login still works; the dashboard omits the SSID/signal |
 | `RECEIVE_BOOT_COMPLETED` | normal, install-time | restart the service after a reboot or app update | auto-login resumes only after the user opens the app |
 
 ### What the app deliberately does **not** ask for
@@ -79,12 +80,16 @@ usually the difference between “works” and “works until the screen turns o
 | 15 (API 35) | `BOOT_COMPLETED` FGS restrictions for `dataSync`/`mediaProcessing` | `specialUse` is not one of the restricted types |
 | Doze | network/CPU may be deferred | FGS + battery-optimisation exemption; the 60 s poll catches up |
 
-The service is started in exactly four places:
+The service is started in exactly five places:
 
-1. `MainActivity` when the user turns **Auto connect** on.
-2. `MainActivity` on launch if it was already enabled.
-3. `BootReceiver` after boot / app update.
-4. The “Login now” / “Pause” notification actions.
+1. `MainActivity` when the user turns **Auto connect** on with valid
+   credentials.
+2. `MainActivity` when the first valid credentials are saved while
+   **Auto connect** is on. Fresh installs start with the switch on.
+3. `MainActivity` on launch if it was already enabled and both credentials are
+   present.
+4. `BootReceiver` after boot / app update.
+5. The “Login now” / “Pause” notification actions.
 
 It is never started from a `NetworkCallback`. The callback only calls
 `attempt()` on the already-running service, so Android 12’s
@@ -119,13 +124,13 @@ Guards:
 ## 3. First-time setup
 
 1. Install the APK (see §4).
-2. Open **CURAJ Auto Login**.
+2. Open **CURAJ Auto Login**. **Auto connect** starts on for fresh installs.
 3. Enter the mobile number and portal password. Settings save automatically;
-   there is no Save button.
-4. Tap **Connect now**. This runs a one-shot login even if Auto connect is off,
-   and updates the status card and **Last action**.
-5. Turn **Auto connect** on. The service starts and the main button changes to
-   **Log out** once the portal session is connected.
+   there is no Save button. Once both fields are valid, the background service
+   starts automatically.
+4. Tap **Connect now** if you want a one-shot login or an immediate retry. It
+   also updates the status card and **Last action**.
+5. The main button changes to **Log out** once the portal session is connected.
 6. Allow notifications when prompted (Android 13+).
 7. Tap **Enable Wi-Fi details** in the Network card if you want the SSID and
    signal percentage. This is optional; login works without it.
@@ -384,8 +389,9 @@ The SSID is shown for reassurance and the signal/link numbers come from the
 same `WifiInfo`. It is deliberately **not** a connection gate:
 
 * Reading `WifiInfo.getSSID()` is location-gated on Android 8.1–12. The app
-  declares `ACCESS_FINE_LOCATION` with `maxSdkVersion="32"` and asks only when
-  the user taps **Enable Wi-Fi details**.
+  declares `ACCESS_FINE_LOCATION` and `ACCESS_COARSE_LOCATION` with
+  `maxSdkVersion="32"`, requests them together on Android 12, and asks only
+  when the user taps **Enable Wi-Fi details**.
 * On Android 13+ the app uses `NEARBY_WIFI_DEVICES` with `neverForLocation`,
   so it does not request background location.
 * Login must work on a phone where the user refuses the prompt. The portal

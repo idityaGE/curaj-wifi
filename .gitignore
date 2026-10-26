@@ -5,6 +5,8 @@ android/app/build/
 android/local.properties
 android/keystore.properties
 android/release-signing.properties
+android/sentry.properties
+android/app/sentry.properties
 android/.idea/
 android/captures/
 *.iml

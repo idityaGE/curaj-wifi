@@ -12,6 +12,7 @@ import android.os.IBinder
 import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import io.sentry.Sentry
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -143,9 +144,11 @@ class AutoLoginService : Service() {
             try {
                 Log.i(TAG, "attempt network=$network")
                 AppState.set(AppState.Connection.CHECKING, "Signing in…")
-                val result = PortalClient.login(
-                    this@AutoLoginService, network, user, pass
-                )
+                val result = SentryTracing.trace("portal.login", "portal") {
+                    PortalClient.login(
+                        this@AutoLoginService, network, user, pass
+                    )
+                }
                 Log.i(TAG, "login ok=${result.ok}: ${result.message}")
                 when {
                     result.ok -> {
@@ -221,6 +224,10 @@ class AutoLoginService : Service() {
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "login crashed", e)
+                Sentry.captureException(e) { scope ->
+                    scope.setTag("portal.phase", "login")
+                    scope.setTag("service", "AutoLoginService")
+                }
                 transientRetries = 0
                 noteFailure()
                 val text = "Sign-in error: ${e.message ?: e.javaClass.simpleName}"

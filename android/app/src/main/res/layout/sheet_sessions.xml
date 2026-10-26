@@ -47,7 +47,7 @@
             android:contentDescription="@string/refresh"
             android:padding="8dp"
             android:src="@drawable/ic_sync"
-            android:tint="?attr/colorOnSurfaceVariant" />
+            app:tint="?attr/colorOnSurfaceVariant" />
 
         <ImageButton
             android:id="@+id/sessions_close"
@@ -57,7 +57,7 @@
             android:contentDescription="@string/close"
             android:padding="8dp"
             android:src="@drawable/ic_close"
-            android:tint="?attr/colorOnSurfaceVariant" />
+            app:tint="?attr/colorOnSurfaceVariant" />
     </LinearLayout>
 
     <ProgressBar

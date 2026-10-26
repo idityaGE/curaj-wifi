@@ -194,12 +194,18 @@ object NetworkMonitor {
             it.address is Inet4Address && !it.address.isLoopbackAddress
         }?.address?.hostAddress
 
-    fun detailsPermission(): String =
+    fun detailsPermissions(): Array<String> =
         if (Build.VERSION.SDK_INT >= 33) {
-            Manifest.permission.NEARBY_WIFI_DEVICES
+            arrayOf(Manifest.permission.NEARBY_WIFI_DEVICES)
         } else {
-            Manifest.permission.ACCESS_FINE_LOCATION
+            // Android 12 requires FINE and COARSE to be requested together.
+            arrayOf(
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.ACCESS_COARSE_LOCATION
+            )
         }
+
+    fun detailsPermission(): String = detailsPermissions().first()
 
     fun hasDetailsPermission(context: Context): Boolean =
         ContextCompat.checkSelfPermission(

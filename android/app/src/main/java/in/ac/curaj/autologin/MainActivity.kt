@@ -10,11 +10,13 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
 import android.text.format.DateUtils
+import android.view.Menu
 import android.view.View
 import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.ProgressBar
 import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -30,6 +32,7 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.materialswitch.MaterialSwitch
 import com.google.android.material.textfield.TextInputEditText
 import com.google.android.material.textfield.TextInputLayout
+import io.sentry.Sentry
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -77,6 +80,7 @@ class MainActivity : AppCompatActivity() {
     private var networkRefreshing = true
     private var initializing = true
     private var switchGuard = false
+    private var hadCredentials = false
     private var saveRunnable: Runnable? = null
     private var savedRunnable: Runnable? = null
 
@@ -88,6 +92,8 @@ class MainActivity : AppCompatActivity() {
         username.setText(Prefs.username(this))
         password.setText(Prefs.password(this))
         enabled.isChecked = Prefs.enabled(this)
+        hadCredentials = Prefs.username(this).isNotBlank() &&
+            Prefs.password(this).isNotBlank()
 
         username.doAfterTextChanged { scheduleSave() }
         password.doAfterTextChanged { scheduleSave() }
@@ -127,8 +133,15 @@ class MainActivity : AppCompatActivity() {
                     confirmLogout()
                     true
                 }
+                MENU_TEST_SENTRY -> {
+                    sendSentryTestEvent()
+                    true
+                }
                 else -> false
             }
+        }
+        if (BuildConfig.DEBUG) {
+            toolbar.menu.add(Menu.NONE, MENU_TEST_SENTRY, Menu.NONE, "Send test event")
         }
 
         if (Prefs.enabled(this) &&
@@ -453,7 +466,8 @@ class MainActivity : AppCompatActivity() {
         Prefs.setUsername(this, user)
         Prefs.setPassword(this, pass)
         Prefs.setEnabled(this, enabled.isChecked)
-        if (user.isNotEmpty() && pass.isNotEmpty()) {
+        val hasCredentials = user.isNotEmpty() && pass.isNotEmpty()
+        if (hasCredentials) {
             usernameLayout.error = null
             passwordLayout.error = null
             accountError.isVisible = false
@@ -462,8 +476,17 @@ class MainActivity : AppCompatActivity() {
                 savedRunnable?.let(handler::removeCallbacks)
                 savedRunnable = Runnable { savedHint.isVisible = false }
                 handler.postDelayed(savedRunnable!!, 2_000L)
+                // Fresh installs start with Auto connect on. Start the
+                // service as soon as the first valid credentials are saved.
+                if (enabled.isChecked && !hadCredentials) {
+                    askNotificationPermission()
+                    AppState.set(AppState.Connection.CHECKING, "Starting…")
+                    startServiceQuietly(force = true)
+                    refreshStatus()
+                }
             }
         }
+        hadCredentials = hasCredentials
     }
 
     private fun onAutoConnectChanged(checked: Boolean) {
@@ -479,11 +502,10 @@ class MainActivity : AppCompatActivity() {
         val user = username.text.toString().trim()
         val pass = password.text.toString()
         if (user.isBlank() || pass.isBlank()) {
-            switchGuard = true
-            enabled.isChecked = false
-            switchGuard = false
+            // Keep the switch on. The service starts automatically once the
+            // first valid credentials are saved.
+            Prefs.setEnabled(this, true)
             showAccountError("Enter both the mobile number and password.")
-            Prefs.setEnabled(this, false)
             refreshStatus()
             return
         }
@@ -536,7 +558,9 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch {
             val result = withContext(Dispatchers.IO) {
                 runCatching {
-                    PortalClient.login(this@MainActivity, network, user, pass)
+                    SentryTracing.trace("portal.login", "portal") {
+                        PortalClient.login(this@MainActivity, network, user, pass)
+                    }
                 }.getOrElse {
                     PortalClient.Result(false, it.message ?: it.javaClass.simpleName)
                 }
@@ -619,7 +643,9 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch {
             val result = withContext(Dispatchers.IO) {
                 runCatching {
-                    PortalClient.logout(network, user, pass)
+                    SentryTracing.trace("portal.logout", "portal") {
+                        PortalClient.logout(network, user, pass)
+                    }
                 }.getOrElse {
                     PortalClient.Result(false, it.message ?: it.javaClass.simpleName)
                 }
@@ -679,7 +705,7 @@ class MainActivity : AppCompatActivity() {
     private fun requestWifiDetailsPermission() {
         ActivityCompat.requestPermissions(
             this,
-            arrayOf(NetworkMonitor.detailsPermission()),
+            NetworkMonitor.detailsPermissions(),
             101
         )
     }
@@ -741,6 +767,13 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun sendSentryTestEvent() {
+        Sentry.captureException(
+            IllegalStateException("Curaj Auto Login Sentry verification")
+        )
+        Toast.makeText(this, "Sentry test event sent", Toast.LENGTH_SHORT).show()
+    }
+
     override fun onDestroy() {
         saveRunnable?.let(handler::removeCallbacks)
         savedRunnable?.let(handler::removeCallbacks)
@@ -750,5 +783,6 @@ class MainActivity : AppCompatActivity() {
     companion object {
         const val EXTRA_MANAGE_SESSIONS =
             "in.ac.curaj.autologin.MANAGE_SESSIONS"
+        private const val MENU_TEST_SENTRY = 1001
     }
 }

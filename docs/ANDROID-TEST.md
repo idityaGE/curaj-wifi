@@ -286,6 +286,42 @@ button returned to **Connect now**. The nearby-Wi-Fi permission could not be
 granted over `adb` (`SecurityException` for the shell UID), so the final SSID
 prompt and the session-sheet close pass must be done through the app UI.
 
+## 8.6 1.6 Auto connect and Sentry (pending on-device)
+
+The 1.6 source changes make **Auto connect** default on and add Sentry. The
+debug/release builds compile, but the phone was disconnected when these checks
+were prepared. Do them with the cable or wireless debugging connected:
+
+1. **Fresh install default**
+   - Uninstall the app, install 1.6, and open it.
+   - Confirm **Auto connect** is already on before any credentials are entered.
+   - Enter username and password, then wait ~1 s without tapping **Connect
+     now**. The foreground notification should appear and the status should
+     move to **Checking / Signing in**.
+2. **Existing user who paused**
+   - Turn **Auto connect** off, close the app, and reopen it.
+   - Confirm the switch stays off and the service is not running.
+3. **Boot with missing password**
+   - Clear the password field, reboot, and confirm `BootReceiver` does not
+     start a credential-less foreground service.
+4. **Debug Sentry event**
+   - Install the debug APK, open the overflow menu, and tap **Send test event**.
+   - Confirm the event appears in Sentry with release
+     `in.ac.curaj.autologin@1.6+7` and environment `debug`.
+   - Inspect the event and confirm there is no password, username, request
+     body, cookie, or Authorization header.
+5. **Release Sentry event and source context**
+   - Build with `SENTRY_AUTH_TOKEN` exported, install the release APK, and
+     trigger the same test path after temporarily enabling a debug menu build
+     (or use a handled portal error).
+   - Confirm the event uses environment `production`, the stack frames are
+     readable, and source context is present.
+6. **Portal tracing**
+   - Trigger a login and a logout while Sentry tracing is enabled.
+   - Confirm `portal.login` and `portal.logout` transactions appear. Session
+     sheet actions should produce `portal.sessions.list` and
+     `portal.sessions.close`.
+
 ## 9. What to test manually
 
 1. Open the app while on campus Wi-Fi. Tap **Connect now**.

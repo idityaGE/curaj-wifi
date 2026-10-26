@@ -14,7 +14,8 @@ class BootReceiver : BroadcastReceiver() {
 
         val enabled = runCatching { Prefs.enabled(ctx) }.getOrDefault(false)
         val user = runCatching { Prefs.username(ctx) }.getOrDefault("")
-        if (enabled && user.isNotBlank()) {
+        val pass = runCatching { Prefs.password(ctx) }.getOrDefault("")
+        if (enabled && user.isNotBlank() && pass.isNotBlank()) {
             runCatching {
                 ContextCompat.startForegroundService(
                     ctx, Intent(ctx, AutoLoginService::class.java)

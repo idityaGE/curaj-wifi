@@ -131,7 +131,9 @@ class SessionsSheet : BottomSheetDialogFragment() {
         viewLifecycleOwner.lifecycleScope.launch {
             val result = withContext(Dispatchers.IO) {
                 runCatching {
-                    PortalClient.listSessions(network, user, pass)
+                    SentryTracing.trace("portal.sessions.list", "portal") {
+                        PortalClient.listSessions(network, user, pass)
+                    }
                 }.getOrElse {
                     PortalClient.SessionsResult(
                         false,
@@ -221,7 +223,9 @@ class SessionsSheet : BottomSheetDialogFragment() {
         viewLifecycleOwner.lifecycleScope.launch {
             val result = withContext(Dispatchers.IO) {
                 runCatching {
-                    PortalClient.logoutSession(network, user, pass, session.id)
+                    SentryTracing.trace("portal.sessions.close", "portal") {
+                        PortalClient.logoutSession(network, user, pass, session.id)
+                    }
                 }.getOrElse {
                     PortalClient.Result(false, it.message ?: it.javaClass.simpleName)
                 }
