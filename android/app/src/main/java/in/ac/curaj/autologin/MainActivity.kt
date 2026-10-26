@@ -561,6 +561,8 @@ class MainActivity : AppCompatActivity() {
                     SentryTracing.trace("portal.login", "portal") {
                         PortalClient.login(this@MainActivity, network, user, pass)
                     }
+                }.onFailure {
+                    SentryTracing.captureHandled("login", "manual", it)
                 }.getOrElse {
                     PortalClient.Result(false, it.message ?: it.javaClass.simpleName)
                 }
@@ -646,6 +648,8 @@ class MainActivity : AppCompatActivity() {
                     SentryTracing.trace("portal.logout", "portal") {
                         PortalClient.logout(network, user, pass)
                     }
+                }.onFailure {
+                    SentryTracing.captureHandled("logout", "manual", it)
                 }.getOrElse {
                     PortalClient.Result(false, it.message ?: it.javaClass.simpleName)
                 }

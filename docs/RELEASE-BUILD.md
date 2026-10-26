@@ -37,7 +37,7 @@ android/app/build/outputs/apk/release/app-release.apk
 A copy prepared for sharing:
 
 ```
-dist/CURAJ-AutoLogin-1.5.apk
+dist/CURAJ-AutoLogin-1.6.apk
 dist/SHA256SUMS.txt
 dist/INSTALL.txt
 ```
@@ -45,20 +45,22 @@ dist/INSTALL.txt
 | item | value |
 |---|---|
 | package | `in.ac.curaj.autologin` |
-| version | 1.5 (versionCode 6) |
-| size | 5.4 MB |
-| SHA-256 | `30ec1785b17482e66fce9ed78dda92afd695633759b6a6ea187b7b62eb367e1b` |
+| version | 1.6 (versionCode 7) |
+| size | 9.3 MB (9,686,360 bytes) |
+| SHA-256 | `eb647a9254cf54eaa9fdef234662a047c2743388ceb284ce2a516d8b24faca44` |
 | APK signature | APK Signature Scheme v2, verified |
 | certificate SHA-256 | `55da02f424dbf6a4dfd9521b236c1bba4f598fe23db477afceea82fa894ac092` |
 
-The code is the tested 1.3 login/logout code plus the 1.4 session-management
-changes and the 1.5 Material 3 dashboard, network monitor, and `EPERM` retry.
-Only the build type and signing key differ from a debug build.
+The code carries the tested 1.3 login/logout path, the 1.4 session management,
+the 1.5 Material 3 dashboard and `EPERM` retry, and the 1.6 Auto connect and
+Sentry work. Release builds are `debuggable=false` and omit the debug-only
+**Send test event** menu.
 
-The 1.6 source is built as a signed candidate (versionCode 7) but is not
-published until the on-device checks in
+Clean build, lint, unit-test tasks, APK signature, manifest, embedded DSN, and
+source-bundle upload were verified for 1.6. The physical-device checks in
 [ANDROID-TEST.md](ANDROID-TEST.md#86-16-auto-connect-and-sentry-pending-on-device)
-pass. The 1.5 APK remains the current public release.
+were not rerun because no phone was connected at release time; run them before
+wide distribution.
 
 ---
 
@@ -187,7 +189,7 @@ Expected:
 ```
 Verifies
 Verified using v2 scheme (APK Signature Scheme v2): true
-package: name='in.ac.curaj.autologin' versionCode='6' versionName='1.5'
+package: name='in.ac.curaj.autologin' versionCode='7' versionName='1.6'
 application-label:'CURAJ Auto Login'
 ```
 
@@ -198,16 +200,16 @@ Then prepare the distribution copy:
 
 ```bash
 mkdir -p ~/curaj-wifi/dist
-cp "$APK" ~/curaj-wifi/dist/CURAJ-AutoLogin-1.5.apk
+cp "$APK" ~/curaj-wifi/dist/CURAJ-AutoLogin-1.6.apk
 cd ~/curaj-wifi/dist
-sha256sum CURAJ-AutoLogin-1.5.apk > SHA256SUMS.txt
+sha256sum CURAJ-AutoLogin-1.6.apk > SHA256SUMS.txt
 ```
 
 ---
 
 ## 7. How friends install it
 
-Send them `CURAJ-AutoLogin-1.5.apk` (and optionally `SHA256SUMS.txt` and
+Send them `CURAJ-AutoLogin-1.6.apk` (and optionally `SHA256SUMS.txt` and
 `INSTALL.txt`).
 
 On the phone:
@@ -260,11 +262,31 @@ you intentionally want a separate app.
 
 ---
 
-## 9. Building the release in GitHub Actions
+## 9. Publishing the release
 
-The repository includes `.github/workflows/android-release.yml`. It builds a
-signed release when you push a tag such as `v1.5`, and attaches the APK to the
-GitHub Release.
+GitHub Actions is intentionally disabled for this repository. Build the APK
+locally, then tag and publish it with `gh`:
+
+```bash
+cd ~/curaj-wifi
+git tag -a v1.6 -m "CURAJ Auto Login 1.6"
+git push origin v1.6
+gh release create v1.6 \
+  dist/CURAJ-AutoLogin-1.6.apk \
+  dist/SHA256SUMS.txt \
+  dist/INSTALL.txt \
+  --title "CURAJ Auto Login 1.6" \
+  --notes-file docs/RELEASE-NOTES-1.6.md
+```
+
+The release tag must point at the commit whose `versionCode` and `versionName`
+are in the APK. Do not publish an unsigned or stale `app-release.apk`.
+
+### Legacy GitHub Actions workflow (disabled)
+
+The repository still contains `.github/workflows/android-release.yml` for
+reference. If Actions is ever re-enabled, it builds a signed release when a tag
+such as `v1.6` is pushed and attaches the APK to the GitHub Release.
 
 Configure these repository secrets:
 
@@ -287,8 +309,8 @@ keystore or passwords into a workflow file or a commit.
 Then:
 
 ```bash
-git tag v1.5
-git push origin v1.5
+git tag v1.6
+git push origin v1.6
 ```
 
 The workflow writes the secrets to a temporary properties file, sets

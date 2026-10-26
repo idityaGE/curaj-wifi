@@ -18,11 +18,12 @@ Everything here was derived from live traffic on `CURAJ CAMPUS CONNECT`
 | [docs/EVIDENCE.md](docs/EVIDENCE.md) | raw headers, bodies, JSON, service logs (credentials redacted) |
 | [docs/ANDROID.md](docs/ANDROID.md) | Android permissions, background model, OEM setup, testing, credential pinning |
 | [docs/ANDROID-ARCHITECTURE.md](docs/ANDROID-ARCHITECTURE.md) | app architecture, runtime flows, concurrency, notification state machine, logout, and the failures fixed along the way |
-| [docs/BUILD-ONLINE.md](docs/BUILD-ONLINE.md) | build the APK with GitHub Actions, Codemagic, Bitrise, Appcircle, GitLab CI, or Codespaces |
+| [docs/BUILD-ONLINE.md](docs/BUILD-ONLINE.md) | reference CI recipes (GitHub Actions is disabled for this repo) |
 | [docs/LOCAL-BUILD.md](docs/LOCAL-BUILD.md) | build the APK locally with JDK 17 + Android command-line tools, no Android Studio |
 | [docs/RELEASE-BUILD.md](docs/RELEASE-BUILD.md) | create/back up a release key, build a signed production APK, verify it, and distribute it |
 | [docs/ANDROID-TEST.md](docs/ANDROID-TEST.md) | live test on Android 16: install, DNS probe failure/fix, successful login, Wi-Fi reconnect, duplicate-auth race, logout, session limit |
 | [docs/SENTRY.md](docs/SENTRY.md) | error/tracing setup, credential scrubbing, local DSN/token configuration, and verification |
+| [docs/RELEASE-NOTES-1.6.md](docs/RELEASE-NOTES-1.6.md) | 1.6 highlights, install/upgrade notes, checksum, and verification status |
 | [docs/SESSION-MANAGEMENT.md](docs/SESSION-MANAGEMENT.md) | the two-session limit, self-care login, why the splash context cookie is required, and verified close semantics |
 
 ---
@@ -241,9 +242,10 @@ Config keys:
 ## 5. Android
 
 Source: `android/` (Kotlin, minSdk 26, targetSdk 35). Current APK is
-**1.5** (versionCode 6). The 1.5 release is a Material 3 redesign with a live
-network dashboard, auto-saving account fields, one-tap log out when connected,
-and a session sheet that loads with a spinner and refreshes itself.
+**1.6** (versionCode 7). The 1.6 release keeps the Material 3 dashboard,
+live network monitor, session sheet, and one-tap log out, and adds Auto
+connect on by default plus Sentry crash, error, and performance reporting.
+Source context is uploaded for release builds.
 
 ```
 app/src/main/java/in/ac/curaj/autologin/
@@ -261,8 +263,8 @@ app/src/main/java/in/ac/curaj/autologin/
 See [docs/ANDROID-ARCHITECTURE.md](docs/ANDROID-ARCHITECTURE.md) for the full
 runtime and design walkthrough.
 
-Build with Android Studio (open `android/`) or, with the included Gradle 8.9
-wrapper:
+Build with Android Studio (open `android/`) or, with the included Gradle
+8.14.6 wrapper:
 
 ```bash
 cd android
@@ -277,20 +279,17 @@ adb install app/build/outputs/apk/debug/app-debug.apk
 
 The signed release APK is at
 `android/app/build/outputs/apk/release/app-release.apk`. A prepared copy is in
-`dist/CURAJ-AutoLogin-1.5.apk`
-(SHA-256 `30ec1785b17482e66fce9ed78dda92afd695633759b6a6ea187b7b62eb367e1b`);
+`dist/CURAJ-AutoLogin-1.6.apk`
+(SHA-256 `eb647a9254cf54eaa9fdef234662a047c2743388ceb284ce2a516d8b24faca44`);
 see [docs/RELEASE-BUILD.md](docs/RELEASE-BUILD.md) for the keystore,
-verification, and distribution steps. Users upgrading from 1.4 can install
-1.5 over it (`adb install -r`) without losing the saved account.
+verification, and distribution steps. Users upgrading from 1.5 can install
+1.6 over it (`adb install -r`) without losing the saved account.
 
-No Android SDK locally? The repo includes **GitHub Actions** workflows:
-push it to GitHub, open **Actions → Build Android APK → Run workflow**, then
-download the `curaj-autologin-debug` artifact. A signed release can be built
-by pushing a tag such as `v1.5` (configure the signing secrets first). See
-[docs/BUILD-ONLINE.md](docs/BUILD-ONLINE.md) for the online options,
-[docs/LOCAL-BUILD.md](docs/LOCAL-BUILD.md) for the local JDK 17 + command-line
-SDK setup, or [docs/RELEASE-BUILD.md](docs/RELEASE-BUILD.md) for the signed
-production build.
+GitHub Actions is intentionally disabled for this repository, so builds are
+made locally with the included wrapper. See
+[docs/LOCAL-BUILD.md](docs/LOCAL-BUILD.md) for the JDK 17 + command-line SDK
+setup and [docs/RELEASE-BUILD.md](docs/RELEASE-BUILD.md) for the signed
+production build. The workflow files are retained only as a reference.
 
 Permissions: **notifications** (Android 13+) are requested at first launch.
 **Nearby Wi-Fi devices** (Android 13+) is optional and only used to show the

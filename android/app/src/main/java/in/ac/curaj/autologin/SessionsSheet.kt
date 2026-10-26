@@ -134,6 +134,8 @@ class SessionsSheet : BottomSheetDialogFragment() {
                     SentryTracing.trace("portal.sessions.list", "portal") {
                         PortalClient.listSessions(network, user, pass)
                     }
+                }.onFailure {
+                    SentryTracing.captureHandled("sessions.list", "manual", it)
                 }.getOrElse {
                     PortalClient.SessionsResult(
                         false,
@@ -226,6 +228,8 @@ class SessionsSheet : BottomSheetDialogFragment() {
                     SentryTracing.trace("portal.sessions.close", "portal") {
                         PortalClient.logoutSession(network, user, pass, session.id)
                     }
+                }.onFailure {
+                    SentryTracing.captureHandled("sessions.close", "manual", it)
                 }.getOrElse {
                     PortalClient.Result(false, it.message ?: it.javaClass.simpleName)
                 }

@@ -19,13 +19,13 @@ This machine now has:
 Build output:
 
 ```
-app-release.apk 5.4 MB
+app-release.apk 9.3 MB
 package         in.ac.curaj.autologin
-versionName     1.5  (versionCode 6)
+versionName     1.6  (versionCode 7)
 minSdk          26
 targetSdk       35
 signature       APK Signature Scheme v2 (release key)
-sha256          30ec1785b17482e66fce9ed78dda92afd695633759b6a6ea187b7b62eb367e1b
+sha256          eb647a9254cf54eaa9fdef234662a047c2743388ceb284ce2a516d8b24faca44
 ```
 
 ---
@@ -194,6 +194,16 @@ The first APK compiled but exposed two runtime issues that are now fixed in
 * A shared `NetworkMonitor` supplies one fresh Wi-Fi `Network`; `EPERM` bind
   failures are retried with a freshly resolved network instead of falling back
   to mobile data.
+
+1.6 is the monitoring/defaults release:
+
+* **Auto connect** defaults on for fresh installs and starts after the first
+  valid credential save; an explicitly saved off state stays off.
+* Sentry crash, handled-error, and performance reporting, including portal
+  transactions and source context, with request bodies, cookies, auth headers,
+  usernames, and passwords scrubbed.
+* `MY_PACKAGE_REPLACED` is registered so the foreground service restarts after
+  an app update as well as after boot.
 
 The full engineering narrative is in
 [ANDROID-ARCHITECTURE.md](ANDROID-ARCHITECTURE.md).

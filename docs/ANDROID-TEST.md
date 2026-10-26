@@ -6,12 +6,12 @@ Tested against the real campus network, not a mock.
 |---|---|
 | phone | OnePlus CPH2793 |
 | Android | 16 |
-| app | `in.ac.curaj.autologin` 1.5 (versionCode 6) |
+| app | `in.ac.curaj.autologin` 1.6 (versionCode 7) |
 | network | `CURAJ CAMPUS CONNECT` |
 | Wi-Fi IP | `10.50.13.252/20` |
 | Wi-Fi MAC | `da:bb:9b:8f:fd:16` |
 | portal | `122.252.242.93` |
-| result | 1.3: login succeeded (`204` through `wlan0`), logout succeeded. 1.4: release built and signature/metadata verified. 1.5: release installed over 1.4 without losing saved data; auto-login, dynamic **Log out**, and the live dashboard were verified on-device. The nearby-Wi-Fi prompt and session-sheet close still need a final pass with the cable connected. |
+| result | 1.3: login succeeded (`204` through `wlan0`), logout succeeded. 1.4: release built and signature/metadata verified. 1.5: release installed over 1.4 without losing saved data; auto-login, dynamic **Log out**, and the live dashboard were verified on-device. 1.6: clean build, lint, signature, manifest, and source bundle verified; on-device pass in §8.6 is pending. The nearby-Wi-Fi prompt and session-sheet close still need a final pass with the cable connected. |
 
 Credentials are not shown here.
 
@@ -25,8 +25,8 @@ adb shell am start -W -n in.ac.curaj.autologin/.MainActivity
 ```
 
 The app asks for the notification permission on first launch. On Android 13+
-this is the only runtime permission it needs for login. The 1.5 main screen is
-a Material 3 dashboard:
+this is the only runtime permission it needs for login. The 1.6 main screen is
+the same Material 3 dashboard:
 
 ```
 CURAJ Auto Login                    ⋮
@@ -357,6 +357,8 @@ were prepared. Do them with the cable or wireless debugging connected:
   `58883579c95cb55b15c5fd10a09209e1c607125f4ce78b1bcdef0c3eba4b7eb8`.
 * The 1.5 release APK is versionCode 6, SHA-256
   `30ec1785b17482e66fce9ed78dda92afd695633759b6a6ea187b7b62eb367e1b`.
+* The 1.6 release APK is versionCode 7, SHA-256
+  `eb647a9254cf54eaa9fdef234662a047c2743388ceb284ce2a516d8b24faca44`.
   The distributed APK is release-signed; the debug variant is only for local
   development.
 * Android may show “unknown app” warnings when installing a release APK by

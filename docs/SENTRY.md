@@ -14,8 +14,8 @@ transactions to Sentry project `idityage/curaj-wifi`.
   - `portal.sessions.close`
 - A warning-level `network-bind-error` event for the intermittent Android
   `EPERM` / `EACCES` Wi-Fi bind failure.
-- Source context and ProGuard/R8 mapping upload on release builds when a Sentry
-  auth token is available.
+- Source context upload on release builds when a Sentry auth token is
+  available (plus ProGuard/R8 mapping if minification is enabled).
 
 Session Replay, screenshots, view hierarchies, profiling, and default PII are
 disabled.
@@ -28,13 +28,21 @@ sets:
 - `sendDefaultPii = false`
 - `attachScreenshot = false`
 - `attachViewHierarchy = false`
+- `debug = false`
 - a `beforeSend` callback that removes the request object, the user object, and
   any extra whose key looks like a password, credential, cookie, authorization
-  header, or username
-- a `beforeBreadcrumb` callback that removes HTTP query strings and the same
-  sensitive keys
+  header, or username; it also re-sanitizes breadcrumbs as a second pass
+- a `beforeBreadcrumb` callback that removes HTTP query strings, fragments,
+  request/response bodies, cookies, headers, and the same sensitive keys, and
+  strips query strings and fragments from `http.url`
 
-Portal exception messages and transaction names do not include credentials.
+The key comparison uses `Locale.ROOT`, so the filter behaves the same on
+Turkish and other non-English device locales. Portal exception messages and
+transaction names do not include credentials.
+
+Sentry's manifest auto-init provider is disabled
+(`io.sentry.auto-init=false`). `CurajApp` is the only initializer, which avoids
+a second initialization with an empty DSN.
 
 ## Local configuration
 
@@ -72,9 +80,10 @@ The source bundle contains the app's Kotlin source files, not runtime
 credentials. It is uploaded to Sentry so stack traces can show the matching
 lines. Source context is only applied to events captured after the upload.
 
-The project uses the Sentry Android Gradle plugin `6.24.0`. Its source-bundle
-task requires Gradle 8.14.x, so the wrapper is pinned to `8.14.6`; do not
-downgrade the wrapper to 8.9.
+The project uses the Sentry Android Gradle plugin `6.24.0` with the matching
+Sentry Android SDK `8.61.1`. The plugin's source-bundle task requires Gradle
+8.14.x, so the wrapper is pinned to `8.14.6`; do not downgrade the wrapper to
+8.9.
 
 ## Build and verify
 

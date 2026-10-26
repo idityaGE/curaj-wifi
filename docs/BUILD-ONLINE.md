@@ -1,5 +1,10 @@
 # Building the APK online
 
+> **GitHub Actions is disabled for this repository.** The supported build and
+> release path is local, using [LOCAL-BUILD.md](LOCAL-BUILD.md) and
+> [RELEASE-BUILD.md](RELEASE-BUILD.md). This page is retained as a reference
+> for the other CI services listed below.
+
 The project is a native Kotlin/Gradle Android app, so **Expo EAS Build does
 not apply** — EAS builds Expo/React Native projects, not an `android/` Gradle
 project. The equivalent services for this app are:
@@ -15,9 +20,9 @@ project. The equivalent services for this app are:
 | **Expo EAS Build** | **no** | — | Expo / React Native only |
 | random “online APK builder” sites | — | — | **avoid**; you cannot audit what they inject |
 
-Recommendation: **GitHub Actions**. It is free for public repos, gives you a
-downloadable artifact, and the workflow is already in this repo at
-`.github/workflows/android.yml`.
+Recommendation for this repository: **build locally**. GitHub Actions is
+disabled; the workflow files remain at `.github/workflows/` only as a
+reference and will not run.
 
 ---
 
@@ -25,7 +30,7 @@ downloadable artifact, and the workflow is already in this repo at
 
 ### 1.1 Put the project on GitHub
 
-The project is not a git repository yet. From `~/curaj-wifi`:
+The project is already a git repository. From `~/curaj-wifi`:
 
 ```bash
 cd ~/curaj-wifi

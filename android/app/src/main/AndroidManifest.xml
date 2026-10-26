@@ -27,6 +27,12 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.Curaj">
 
+        <!-- CurajApp initializes Sentry itself so the DSN can come from the
+             local build configuration instead of the manifest. -->
+        <meta-data
+            android:name="io.sentry.auto-init"
+            android:value="false" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -53,6 +59,7 @@
             android:exported="false">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
     </application>

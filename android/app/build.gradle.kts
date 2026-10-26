@@ -119,6 +119,6 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     implementation("com.google.android.material:material:1.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
-    implementation(platform("io.sentry:sentry-bom:8.33.0"))
+    implementation(platform("io.sentry:sentry-bom:8.61.1"))
     implementation("io.sentry:sentry-android")
 }

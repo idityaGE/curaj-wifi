@@ -125,6 +125,10 @@ object NetworkMonitor {
         _wifi.value = Wifi(network, readDetails(network))
     }
 
+    // WifiInfo.connectionInfo and the two-argument calculateSignalLevel are
+    // deprecated, but the former is still the only fallback for API 26-28 and
+    // the latter is the only public 5/101-level converter.
+    @Suppress("DEPRECATION")
     private fun readDetails(network: Network): WifiDetails? {
         val cm = manager ?: return null
         val caps = cm.getNetworkCapabilities(network) ?: return null
@@ -138,8 +142,12 @@ object NetworkMonitor {
             }
         }.getOrNull()
         val legacyInfo = runCatching {
-            val wm = appContext?.getSystemService(Context.WIFI_SERVICE) as? WifiManager
-            wm?.connectionInfo
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+                val wm = appContext?.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+                wm?.connectionInfo
+            } else {
+                null
+            }
         }.getOrNull()
         val candidates = listOfNotNull(capsInfo, legacyInfo)
 
