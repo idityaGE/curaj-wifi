@@ -26,7 +26,7 @@ Companion documents:
 | language | Kotlin |
 | minimum SDK | 26 (Android 8.0) |
 | target / compile SDK | 35 (Android 15) |
-| build | Gradle 8.9 wrapper, AGP 8.7.3, Kotlin 2.0.21, JDK 17 |
+| build | Gradle 8.14.6 wrapper, AGP 8.7.3, Kotlin 2.0.21, JDK 17 |
 | debug APK | `android/app/build/outputs/apk/debug/app-debug.apk` |
 | production APK | `dist/CURAJ-AutoLogin-1.5.apk` (release-signed) |
 | production SHA-256 | `30ec1785b17482e66fce9ed78dda92afd695633759b6a6ea187b7b62eb367e1b` |

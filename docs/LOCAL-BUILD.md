@@ -12,7 +12,7 @@ This machine now has:
 | Android SDK | `~/Android/Sdk` |
 | SDK platform | `platforms;android-35` |
 | Build tools | `build-tools;35.0.0` (AGP also pulled 34.0.0) |
-| Gradle | downloaded by the wrapper to `~/.gradle/wrapper/dists/gradle-8.9-bin` |
+| Gradle | downloaded by the wrapper to `~/.gradle/wrapper/dists/gradle-8.14.6-bin` |
 | Debug APK | `android/app/build/outputs/apk/debug/app-debug.apk` |
 | Release APK | `android/app/build/outputs/apk/release/app-release.apk` |
 
@@ -87,7 +87,7 @@ cd ~/curaj-wifi/android
 ./gradlew assembleDebug
 ```
 
-First run downloads Gradle 8.9 and the AndroidX/Kotlin dependencies, so it
+First run downloads Gradle 8.14.6 and the AndroidX/Kotlin dependencies, so it
 takes several minutes. Subsequent builds are ~15 seconds.
 
 The debug APK appears at:

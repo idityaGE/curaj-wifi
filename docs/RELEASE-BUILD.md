@@ -145,6 +145,10 @@ The APK appears at:
 app/build/outputs/apk/release/app-release.apk
 ```
 
+The Gradle wrapper is pinned to 8.14.6 because the Sentry Android Gradle
+plugin's source-bundle task needs Gradle 8.14.x. Keep it at 8.14.6 unless the
+plugin is upgraded and re-tested.
+
 Sentry source-context upload is optional. To include it, export a Sentry org
 auth token for the build only:
 

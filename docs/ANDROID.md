@@ -199,7 +199,7 @@ and the live verification.
 ## 4. Build and install
 
 The project uses AGP 8.7.3, Kotlin 2.0.21, `compileSdk 35`, `minSdk 26`, and
-Java 17. The official Gradle 8.9 wrapper is included:
+Java 17. The official Gradle 8.14.6 wrapper is included:
 
 ```bash
 cd android

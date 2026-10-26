@@ -68,6 +68,14 @@ Alternatively add `authToken=...` to the same mode-600
 If the token is absent, the build still works and source-context upload is
 skipped.
 
+The source bundle contains the app's Kotlin source files, not runtime
+credentials. It is uploaded to Sentry so stack traces can show the matching
+lines. Source context is only applied to events captured after the upload.
+
+The project uses the Sentry Android Gradle plugin `6.24.0`. Its source-bundle
+task requires Gradle 8.14.x, so the wrapper is pinned to `8.14.6`; do not
+downgrade the wrapper to 8.9.
+
 ## Build and verify
 
 Debug build:
@@ -89,13 +97,19 @@ export SENTRY_AUTH_TOKEN="..."
 JAVA_HOME="$(mise where java)" ./gradlew :app:assembleRelease
 ```
 
+With a token, the build runs `sentryCollectSourcesRelease`,
+`sentryBundleSourcesRelease`, and `sentryUploadSourceBundleRelease`. The last
+task should end with `UPLOADED <debug-id> (<debug-id>.zip; sources)`.
+
 Verify:
 
 1. The test event appears in Sentry under the `curaj-wifi` project.
 2. The event does not contain the portal password, username, request body,
    cookies, or Authorization headers.
 3. A portal login produces a `portal.login` transaction.
-4. A release event shows readable Kotlin frames and source context.
+4. The source bundle appears under **Project Settings → Debug Files** with
+   symbol type `sourcebundle`, and a release event shows readable Kotlin frames
+   and source context.
 5. The release APK still verifies with `apksigner`.
 
 ## OpenCode

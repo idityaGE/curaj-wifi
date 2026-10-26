@@ -94,7 +94,7 @@ The artifact is kept for 30 days.
 - actions/upload-artifact@v4     # app-debug.apk
 ```
 
-The project now includes the official **Gradle 8.9 wrapper**, so the same
+The project now includes the official **Gradle 8.14.6 wrapper**, so the same
 `./gradlew assembleDebug` command works on GitHub Actions, Codemagic, Bitrise,
 GitLab CI, or your own machine.
 
