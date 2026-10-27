@@ -23,3 +23,6 @@ __pycache__/
 # OS / editor
 .DS_Store
 *.swp
+
+# Windows client build output
+windows/dist/

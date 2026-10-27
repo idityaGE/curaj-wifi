@@ -5,6 +5,8 @@ Reverse-engineered the captive portal, then built:
 * **Linux** — `curaj-login`, a dependency-free Python client + systemd user service.
 * **Android** — a small Kotlin app with a foreground service that logs you in
   whenever the portal blocks the Wi-Fi.
+* **Windows** — `windows/`: one Go exe (service + tray + CLI) with the same
+  auto-login behavior; distributed via an `irm | iex` PowerShell installer.
 
 Everything here was derived from live traffic on `CURAJ CAMPUS CONNECT`
 (interface `wlp0s20f3`, IP `10.50.11.134`, gateway `10.50.0.1`).
@@ -26,6 +28,9 @@ Everything here was derived from live traffic on `CURAJ CAMPUS CONNECT`
 | [docs/RELEASE-NOTES-1.6.md](docs/RELEASE-NOTES-1.6.md) | 1.6 highlights, install/upgrade notes, checksum, and verification status |
 | [docs/RELEASE-NOTES-1.6.1.md](docs/RELEASE-NOTES-1.6.1.md) | 1.6.1 patch notes: online-check fix for the gateway Squid, checksum, verification status |
 | [docs/SESSION-MANAGEMENT.md](docs/SESSION-MANAGEMENT.md) | the two-session limit, self-care login, why the splash context cookie is required, and verified close semantics |
+| [docs/WINDOWS.md](docs/WINDOWS.md) | Windows client: architecture (service + tray), state machine, UI contract, security posture, troubleshooting |
+| [docs/WINDOWS-TEST.md](docs/WINDOWS-TEST.md) | Windows checklist for a friend's laptop: install, login, session-limit one-click fix, reboot persistence, uninstall |
+| [docs/RELEASE-NOTES-WIN-1.0.md](docs/RELEASE-NOTES-WIN-1.0.md) | Windows 1.0 release notes and install command |
 
 ---
 
