@@ -1,6 +1,5 @@
 package `in`.ac.curaj.autologin
 
-import android.app.ForegroundServiceStartNotAllowedException
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -309,10 +308,23 @@ class AutoLoginService : Service() {
     private fun enterForeground(text: String): Boolean = try {
         startForeground(NOTIF_ID, notification(text))
         true
-    } catch (e: ForegroundServiceStartNotAllowedException) {
-        Log.w(TAG, "startForeground() denied by the OS", e)
-        false
+    } catch (e: RuntimeException) {
+        if (isForegroundStartDenied(e)) {
+            Log.w(TAG, "startForeground() denied by the OS", e)
+            false
+        } else {
+            throw e
+        }
     }
+
+    /**
+     * Android 12+ throws ForegroundServiceStartNotAllowedException here. Compare
+     * the class name instead of referencing the API-31 class directly, so the
+     * guard also loads on Android 8-11 where that class does not exist.
+     */
+    private fun isForegroundStartDenied(e: RuntimeException): Boolean =
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            e.javaClass.name == FOREGROUND_START_NOT_ALLOWED
 
     /**
      * A plain notification is not a foreground one, so it is always allowed.
@@ -508,6 +520,8 @@ class AutoLoginService : Service() {
         private const val NOTIF_ID = 41
         private const val NOTIF_LIMIT_ID = 42
         private const val NOTIF_RESUME_ID = 43
+        private const val FOREGROUND_START_NOT_ALLOWED =
+            "android.app.ForegroundServiceStartNotAllowedException"
         private const val POLL_MS = 60_000L
         private const val COOLDOWN_MS = 20_000L
 
