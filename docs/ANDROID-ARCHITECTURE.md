@@ -124,7 +124,7 @@ restore the session without the user opening a browser**.
 | `Prefs` | encrypted credentials, enabled flag, last result/time | network or portal logic |
 | `BootReceiver` | restart the service after boot/app update when enabled and configured | retrying failed logins |
 | `CurajApp` | initialize Sentry and scrub credentials/PII before events leave the device | portal or UI logic |
-| `SentryTracing` | finish a transaction around each blocking portal operation | portal protocol logic |
+| `SentryTracing` | wrap each blocking portal operation in a transaction, attach an `http.client` span per request, and tag the outcome (`portal.result`) | portal protocol logic |
 
 The split is intentional: `PortalClient` has no Android UI or service state, so
 the same flow can be exercised from the app, logcat, or a one-shot test without
@@ -538,7 +538,18 @@ leaves the device:
 * extras and HTTP breadcrumbs with password/credential/cookie/authorization/
   username keys are removed;
 * HTTP query strings are removed from breadcrumbs;
+* transaction request/user data is removed, and transaction span data is
+  re-sanitized (query strings, fragments, bodies, cookies, headers, and
+  sensitive keys are dropped);
 * screenshots, view hierarchies, and default PII are disabled.
+
+`SentryTracing` keeps the current portal transaction in a thread-local and
+turns every `PortalClient` `HttpURLConnection`/raw-socket request into an
+`http.client` child span with a `portal.step` label. It also tags the
+transaction with `portal.result` (`ok`, `failed`, `session_limit`,
+`bind_error`, or `exception`) so expected failures do not appear as successful
+transactions. This relies on the portal calls staying synchronous on one
+background thread; if they become suspending, pass the span explicitly.
 
 The DSN lives in `~/.config/curaj-wifi/sentry.properties` (or `SENTRY_DSN`).
 The org auth token is read only from `SENTRY_AUTH_TOKEN` at build time and is
@@ -856,7 +867,7 @@ android/app/src/main/java/in/ac/curaj/autologin/
   Prefs.kt               Keystore-backed encrypted preferences
   BootReceiver.kt        boot / package-replaced restart
   CurajApp.kt            Sentry initialization and event scrubbing
-  SentryTracing.kt       portal transaction wrapper
+  SentryTracing.kt       portal transactions, per-request HTTP spans, outcomes
 
 android/app/src/main/
   AndroidManifest.xml

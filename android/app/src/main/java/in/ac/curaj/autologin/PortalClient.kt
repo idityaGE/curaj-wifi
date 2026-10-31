@@ -191,7 +191,7 @@ object PortalClient {
 
         // 1. portal session (JSESSIONID carries ip/mac/sc context)
         val splash = try {
-            request(network, portal)
+            request(network, portal, step = "splash")
         } catch (e: Exception) {
             return Result(false, "portal unreachable: ${e.message}")
         }
@@ -215,7 +215,8 @@ object PortalClient {
                     URLEncoder.encode(requestUri, "UTF-8"),
                 method = "POST",
                 body = ByteArray(0),
-                headers = common
+                headers = common,
+                step = "login_page"
             )
         } catch (_: Exception) {
             // not strictly required; newlogin.do is the one that counts
@@ -234,7 +235,8 @@ object PortalClient {
                 "http://$authority/userportal/newlogin.do",
                 method = "POST",
                 body = form.toByteArray(),
-                headers = common + ("Content-Type" to "application/x-www-form-urlencoded")
+                headers = common + ("Content-Type" to "application/x-www-form-urlencoded"),
+                step = "newlogin"
             )
         } catch (e: Exception) {
             return Result(false, "login POST failed: ${e.message}")
@@ -281,7 +283,7 @@ object PortalClient {
                 Log.i(TAG, "portal is already authenticating this IP; waiting")
                 repeat(6) {
                     Thread.sleep(1000)
-                    if (isOnline(network)) {
+                    if (isOnline(network, "verify_online")) {
                         return Result(true, "logged in")
                     }
                 }
@@ -297,12 +299,17 @@ object PortalClient {
                     request(
                         network,
                         "http://$authority/userportal/logout.do",
-                        headers = mapOf("Cookie" to cookie)
+                        headers = mapOf("Cookie" to cookie),
+                        step = "stale_logout"
                     )
                 }
-                runCatching { request(network, "http://1.254.254.254/logout") }
+                runCatching {
+                    request(network, NAS_LOGOUT_URL, step = "nas_logout")
+                }
                 Thread.sleep(1500)
-                if (isOnline(network)) return Result(true, "already online")
+                if (isOnline(network, "verify_online")) {
+                    return Result(true, "already online")
+                }
                 return loginOnce(ctx, network, user, pass, depth + 1)
             }
 
@@ -314,7 +321,7 @@ object PortalClient {
         // tolerates probe failures by falling through to the next endpoint.
         repeat(6) {
             Thread.sleep(1500)
-            if (isOnline(network)) {
+            if (isOnline(network, "verify_online")) {
                 return Result(true, "logged in")
             }
         }
@@ -344,7 +351,7 @@ object PortalClient {
         }
 
         val splash = try {
-            request(network, portal)
+            request(network, portal, step = "splash")
         } catch (e: Exception) {
             return Result(false, "portal unreachable: ${e.message}")
         }
@@ -372,7 +379,8 @@ object PortalClient {
                 "http://$authority/userportal/newlogin.do",
                 method = "POST",
                 body = form.toByteArray(),
-                headers = common + ("Content-Type" to "application/x-www-form-urlencoded")
+                headers = common + ("Content-Type" to "application/x-www-form-urlencoded"),
+                step = "newlogin"
             )
         }
 
@@ -380,18 +388,21 @@ object PortalClient {
             request(
                 network,
                 "http://$authority/userportal/logout.do",
-                headers = mapOf("Cookie" to cookie)
+                headers = mapOf("Cookie" to cookie),
+                step = "logout"
             )
         }
         Log.i(TAG, "logout.do -> ${logoutResult.getOrNull()?.code ?: logoutResult.exceptionOrNull()?.message}")
 
-        runCatching { request(network, NAS_LOGOUT_URL) }
+        runCatching { request(network, NAS_LOGOUT_URL, step = "nas_logout") }
 
         repeat(4) {
             Thread.sleep(1000)
             // isOnline (not the origin-form probe): a 400 from the gateway
             // Squid must not be mistaken for "logged out".
-            if (!isOnline(network)) return Result(true, "logged out")
+            if (!isOnline(network, "verify_logout")) {
+                return Result(true, "logged out")
+            }
         }
         return Result(false, "could not verify logout")
     }
@@ -453,7 +464,8 @@ object PortalClient {
                     "Referer" to
                         "http://$PORTAL_HOST$CURRENT_SESSIONS_PATH",
                     "Origin" to "http://$PORTAL_HOST"
-                )
+                ),
+                step = "session_close"
             )
         } catch (e: Exception) {
             return Result(false, "logout request failed: ${e.message}")
@@ -464,8 +476,9 @@ object PortalClient {
         // Re-list and only report success when the id is really gone.
         repeat(4) {
             Thread.sleep(800)
-            val page = runCatching { fetchSessionsPage(network, cookie) }
-                .getOrNull()
+            val page = runCatching {
+                fetchSessionsPage(network, cookie, step = "verify_sessions_page")
+            }.getOrNull()
             if (page != null) {
                 val text = page.body
                 val validPage =
@@ -569,7 +582,7 @@ object PortalClient {
             Log.w(TAG, "refusing portal context from untrusted host: $portal")
             return null
         }
-        return cookieFrom(request(network, portal))
+        return cookieFrom(request(network, portal, step = "context"))
     }
 
     private fun findPortalForContext(network: Network): String? {
@@ -604,7 +617,7 @@ object PortalClient {
         // closing a session will then fail verification instead of lying.
         var cookie = portalContextCookie(network)
         if (cookie == null) {
-            val first = request(network, loginPage)
+            val first = request(network, loginPage, step = "selfcare_login_page")
             cookie = cookieFrom(first) ?: return null
         }
 
@@ -623,20 +636,26 @@ object PortalClient {
                 "Content-Type" to "application/x-www-form-urlencoded",
                 "Referer" to loginPage,
                 "Origin" to base
-            )
+            ),
+            step = "selfcare_newlogin"
         )
         cookieFrom(second)?.let { cookie = it }
         return cookie
     }
 
-    private fun fetchSessionsPage(network: Network, cookie: String): Http =
+    private fun fetchSessionsPage(
+        network: Network,
+        cookie: String,
+        step: String = "sessions_page"
+    ): Http =
         request(
             network,
             "http://$PORTAL_HOST$CURRENT_SESSIONS_PATH",
             headers = mapOf(
                 "Cookie" to cookie,
                 "Referer" to "http://$PORTAL_HOST/userportal/home.do?from=Home"
-            )
+            ),
+            step = step
         )
 
     private fun cookieFrom(resp: Http): String? =
@@ -713,7 +732,10 @@ object PortalClient {
         // /login is the reliable splash hop; / sometimes blackholes while online.
         for (splash in listOf("http://1.254.254.254/login", "http://1.254.254.254/")) {
             try {
-                val found = findPortal(request(network, splash), network)
+                val found = findPortal(
+                    request(network, splash, step = "discovery"),
+                    network
+                )
                 if (found != null && found.contains("/userportal")) return found
             } catch (_: Exception) {
                 // try the next splash URL
@@ -739,7 +761,10 @@ object PortalClient {
 
             if (runCatching { URI(url).host }.getOrNull() == "1.254.254.254") {
                 try {
-                    val deeper = findPortal(request(network, url), network)
+                    val deeper = findPortal(
+                        request(network, url, step = "discovery"),
+                        network
+                    )
                     if (deeper != null && !deeper.contains("1.254.254.254")) {
                         return deeper
                     }
@@ -756,7 +781,7 @@ object PortalClient {
         var last: Exception? = null
         for (url in CHECK_URLS) {
             try {
-                return request(network, url)
+                return request(network, url, step = "probe")
             } catch (e: Exception) {
                 last = e
                 Log.w(TAG, "probe $url failed: ${e.message}")
@@ -779,10 +804,10 @@ object PortalClient {
      * everything this check needs (a 204 has no body, and the pre-auth
      * splash body is parsed by findPortal from probe(), not here).
      */
-    fun isOnline(network: Network): Boolean {
+    fun isOnline(network: Network, step: String = "online_check"): Boolean {
         for (host in CHECK_IPS) {
             try {
-                if (proxyFormStatus(network, host) == 204) return true
+                if (proxyFormStatus(network, host, step) == 204) return true
             } catch (e: Exception) {
                 Log.w(TAG, "online check via $host failed: ${e.message}")
             }
@@ -790,8 +815,19 @@ object PortalClient {
         return false
     }
 
-    private fun proxyFormStatus(network: Network, host: String): Int {
-        val socket = network.socketFactory.createSocket()
+    private fun proxyFormStatus(network: Network, host: String, step: String): Int {
+        val span = SentryTracing.startHttpSpan(
+            "GET",
+            "http://connectivitycheck.gstatic.com/generate_204",
+            step
+        )
+        span?.setData("server.address", host)
+        val socket = try {
+            network.socketFactory.createSocket()
+        } catch (e: Throwable) {
+            SentryTracing.failHttpSpan(span, e)
+            throw e
+        }
         try {
             socket.tcpNoDelay = true
             socket.connect(InetSocketAddress(host, 80), PROBE_TIMEOUT_MS)
@@ -805,8 +841,13 @@ object PortalClient {
                     "Connection: close\r\n\r\n").toByteArray()
             )
             val head = readResponseHead(socket.getInputStream())
-            return STATUS_LINE.find(head)?.groupValues?.get(1)?.toInt()
+            val status = STATUS_LINE.find(head)?.groupValues?.get(1)?.toInt()
                 ?: throw IOException("unparseable probe response")
+            SentryTracing.finishHttpSpan(span, status)
+            return status
+        } catch (e: Throwable) {
+            SentryTracing.failHttpSpan(span, e)
+            throw e
         } finally {
             runCatching { socket.close() }
         }
@@ -830,33 +871,45 @@ object PortalClient {
         url: String,
         method: String = "GET",
         body: ByteArray? = null,
-        headers: Map<String, String> = emptyMap()
+        headers: Map<String, String> = emptyMap(),
+        step: String? = null
     ): Http {
-        val conn = network.openConnection(URL(url)) as HttpURLConnection
-        conn.instanceFollowRedirects = false
-        conn.connectTimeout = 7000
-        conn.readTimeout = 7000
-        conn.requestMethod = method
-        conn.setRequestProperty("User-Agent", "CURAJ-AutoLogin/1.0 (Android)")
-        conn.setRequestProperty("Accept", "*/*")
-        for ((k, v) in headers) conn.setRequestProperty(k, v)
+        val span = SentryTracing.startHttpSpan(method, url, step)
+        try {
+            val conn = network.openConnection(URL(url)) as HttpURLConnection
+            conn.instanceFollowRedirects = false
+            conn.connectTimeout = 7000
+            conn.readTimeout = 7000
+            conn.requestMethod = method
+            conn.setRequestProperty("User-Agent", "CURAJ-AutoLogin/1.0 (Android)")
+            conn.setRequestProperty("Accept", "*/*")
+            for ((k, v) in headers) conn.setRequestProperty(k, v)
 
-        if (body != null) {
-            conn.doOutput = true
-            if (conn.getRequestProperty("Content-Type") == null) {
-                conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
+            if (body != null) {
+                conn.doOutput = true
+                if (conn.getRequestProperty("Content-Type") == null) {
+                    conn.setRequestProperty(
+                        "Content-Type",
+                        "application/x-www-form-urlencoded"
+                    )
+                }
+                conn.outputStream.use { it.write(body) }
             }
-            conn.outputStream.use { it.write(body) }
-        }
 
-        val code = conn.responseCode
-        val stream = if (code in 200..299) conn.inputStream else conn.errorStream
-        val text = stream?.bufferedReader(Charsets.ISO_8859_1)?.use { it.readText() } ?: ""
-        val headersOut: Map<String, List<String>> = conn.headerFields.entries
-            .filter { it.key != null }
-            .associate { it.key!! to it.value }
-        conn.disconnect()
-        return Http(code, headersOut, text, url)
+            val code = conn.responseCode
+            span?.setData("http.response.status_code", code)
+            val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+            val text = stream?.bufferedReader(Charsets.ISO_8859_1)?.use { it.readText() } ?: ""
+            val headersOut: Map<String, List<String>> = conn.headerFields.entries
+                .filter { it.key != null }
+                .associate { it.key!! to it.value }
+            conn.disconnect()
+            SentryTracing.finishHttpSpan(span)
+            return Http(code, headersOut, text, url)
+        } catch (e: Throwable) {
+            SentryTracing.failHttpSpan(span, e)
+            throw e
+        }
     }
 
     private val META = Regex("""(?i)URL=([^"'>\s]+)""")

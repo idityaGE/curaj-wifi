@@ -131,8 +131,22 @@ class SessionsSheet : BottomSheetDialogFragment() {
         viewLifecycleOwner.lifecycleScope.launch {
             val result = withContext(Dispatchers.IO) {
                 runCatching {
-                    SentryTracing.trace("portal.sessions.list", "portal") {
-                        PortalClient.listSessions(network, user, pass)
+                    SentryTracing.trace(
+                        name = "portal.sessions.list",
+                        operation = "portal",
+                        classify = { r: PortalClient.SessionsResult ->
+                            if (r.ok) PortalOutcome.OK else PortalOutcome.FAILED
+                        }
+                    ) {
+                        SentryTracing.tag("portal.trigger", "manual")
+                        PortalClient.listSessions(network, user, pass).also { r ->
+                            if (r.ok) {
+                                SentryTracing.data(
+                                    "portal.sessions.count",
+                                    r.sessions.size
+                                )
+                            }
+                        }
                     }
                 }.onFailure {
                     SentryTracing.captureHandled("sessions.list", "manual", it)
@@ -225,7 +239,14 @@ class SessionsSheet : BottomSheetDialogFragment() {
         viewLifecycleOwner.lifecycleScope.launch {
             val result = withContext(Dispatchers.IO) {
                 runCatching {
-                    SentryTracing.trace("portal.sessions.close", "portal") {
+                    SentryTracing.trace(
+                        name = "portal.sessions.close",
+                        operation = "portal",
+                        classify = { r: PortalClient.Result ->
+                            if (r.ok) PortalOutcome.OK else PortalOutcome.FAILED
+                        }
+                    ) {
+                        SentryTracing.tag("portal.trigger", "manual")
                         PortalClient.logoutSession(network, user, pass, session.id)
                     }
                 }.onFailure {

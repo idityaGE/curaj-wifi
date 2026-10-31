@@ -326,11 +326,20 @@ were prepared. Do them with the cable or wireless debugging connected:
      (or use a handled portal error).
    - Confirm the event uses environment `production`, the stack frames are
      readable, and source context is present.
-6. **Portal tracing**
+6. **Portal tracing and child spans**
    - Trigger a login and a logout while Sentry tracing is enabled.
-   - Confirm `portal.login` and `portal.logout` transactions appear. Session
-     sheet actions should produce `portal.sessions.list` and
-     `portal.sessions.close`.
+   - Confirm `portal.login` and `portal.logout` transactions appear.
+   - Open `portal.login` and confirm it has `http.client` child spans for the
+     online check, probe, splash, `login.do`, `newlogin.do`, and verification.
+     Retried endpoints appear as extra spans with the same `portal.step`.
+   - Confirm `portal.logout` shows discovery, splash, newlogin, logout, NAS,
+     and `verify_logout` spans.
+   - Session sheet actions should produce `portal.sessions.list` (probe,
+     context, selfcare_newlogin, sessions_page) and `portal.sessions.close`
+     (session_close, verify_sessions_page).
+   - Trigger a wrong-password login and confirm the transaction has
+     `portal.result=failed` and a non-OK status. Confirm no span or transaction
+     data contains credentials, query strings, cookies, or request bodies.
 
 ## 9. What to test manually
 

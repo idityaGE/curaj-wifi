@@ -58,6 +58,39 @@ class CurajApp : Application() {
                     breadcrumb
                 }
             )
+
+            // Child HTTP spans now carry request URLs. PortalClient only ever
+            // writes sanitized paths, but scrub again in case a future span or
+            // auto-instrumentation adds a query, body, cookie, or header.
+            options.setBeforeSendTransaction(
+                SentryOptions.BeforeSendTransactionCallback { transaction, _ ->
+                    transaction.request = null
+                    transaction.user = null
+                    transaction.extras?.keys?.toList()?.forEach { key ->
+                        if (isSensitiveKey(key)) transaction.extras?.remove(key)
+                    }
+                    transaction.spans?.forEach { span ->
+                        val data = span.data ?: return@forEach
+                        data.keys.toList().forEach { key ->
+                            when {
+                                key.equals("http.url", ignoreCase = true) -> {
+                                    (data[key] as? String)?.let {
+                                        data[key] = stripQueryAndFragment(it)
+                                    }
+                                }
+                                key.equals("http.query", ignoreCase = true) ||
+                                    key.equals("http.fragment", ignoreCase = true) ||
+                                    key.equals("http.data", ignoreCase = true) ||
+                                    key.equals("http.body", ignoreCase = true) ||
+                                    key.equals("http.cookies", ignoreCase = true) ||
+                                    key.equals("http.headers", ignoreCase = true) ||
+                                    isSensitiveKey(key) -> data.remove(key)
+                            }
+                        }
+                    }
+                    transaction
+                }
+            )
         }
     }
 
