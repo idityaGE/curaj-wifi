@@ -144,12 +144,6 @@ class MainActivity : AppCompatActivity() {
             toolbar.menu.add(Menu.NONE, MENU_TEST_SENTRY, Menu.NONE, "Send test event")
         }
 
-        if (Prefs.enabled(this) &&
-            Prefs.username(this).isNotBlank() &&
-            Prefs.password(this).isNotBlank()
-        ) {
-            startServiceQuietly()
-        }
         askNotificationPermission()
 
         if (intent?.getBooleanExtra(EXTRA_MANAGE_SESSIONS, false) == true) {
@@ -178,6 +172,16 @@ class MainActivity : AppCompatActivity() {
     override fun onStart() {
         super.onStart()
         NetworkMonitor.start(this)
+        // Starting from a visible activity is always allowed, so this also
+        // recovers auto-login after Android or the OEM stopped the service in
+        // the background. It runs on every foreground entry, including the
+        // singleTop onNewIntent path from the "Auto-login paused" notification.
+        if (Prefs.enabled(this) &&
+            Prefs.username(this).isNotBlank() &&
+            Prefs.password(this).isNotBlank()
+        ) {
+            startServiceQuietly()
+        }
         refreshStatus()
     }
 
@@ -558,7 +562,19 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch {
             val result = withContext(Dispatchers.IO) {
                 runCatching {
-                    SentryTracing.trace("portal.login", "portal") {
+                    SentryTracing.trace(
+                        name = "portal.login",
+                        operation = "portal",
+                        classify = { r: PortalClient.Result ->
+                            when {
+                                r.ok -> PortalOutcome.OK
+                                r.sessionLimit -> PortalOutcome.SESSION_LIMIT
+                                r.bindError -> PortalOutcome.BIND_ERROR
+                                else -> PortalOutcome.FAILED
+                            }
+                        }
+                    ) {
+                        SentryTracing.tag("portal.trigger", "manual")
                         PortalClient.login(this@MainActivity, network, user, pass)
                     }
                 }.onFailure {
@@ -645,7 +661,14 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch {
             val result = withContext(Dispatchers.IO) {
                 runCatching {
-                    SentryTracing.trace("portal.logout", "portal") {
+                    SentryTracing.trace(
+                        name = "portal.logout",
+                        operation = "portal",
+                        classify = { r: PortalClient.Result ->
+                            if (r.ok) PortalOutcome.OK else PortalOutcome.FAILED
+                        }
+                    ) {
+                        SentryTracing.tag("portal.trigger", "manual")
                         PortalClient.logout(network, user, pass)
                     }
                 }.onFailure {

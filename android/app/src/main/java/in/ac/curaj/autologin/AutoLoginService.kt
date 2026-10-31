@@ -1,5 +1,6 @@
 package `in`.ac.curaj.autologin
 
+import android.app.ForegroundServiceStartNotAllowedException
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -44,14 +45,28 @@ class AutoLoginService : Service() {
     private var lastNotificationText: String? = null
     private var lastLimit = false
     private var limitNotified = false
+    private var foregroundDenied = false
 
     override fun onCreate() {
         super.onCreate()
-        NetworkMonitor.start(this)
         createChannel()
         val initial = initialText()
         lastNotificationText = initial
-        startForeground(NOTIF_ID, notification(initial))
+        if (!enterForeground(initial)) {
+            // Android 12+ only allows startForeground() when the system recorded
+            // this start as foreground-eligible. A background resurrection (the
+            // OEM killing the app and the system restarting this sticky service,
+            // or a plain startService() from a notification action) is not
+            // eligible. Running anyway would leave a background service doing
+            // network I/O, and every restart would crash the process again, so
+            // stop and ask the user to resume from the UI instead.
+            foregroundDenied = true
+            postResumeNotification()
+            stopSelf()
+            return
+        }
+        cancelResumeNotification()
+        NetworkMonitor.start(this)
 
         scope.launch {
             NetworkMonitor.wifi.collect { wifi ->
@@ -81,12 +96,16 @@ class AutoLoginService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // onCreate() already stopped us: never ask the system to resurrect a
+        // service that cannot become a foreground service.
+        if (foregroundDenied) return START_NOT_STICKY
         when (intent?.action) {
             ACTION_PAUSE -> {
                 Prefs.setEnabled(this, false)
                 Prefs.record(this, "Paused by you")
                 AppState.set(AppState.Connection.PAUSED, "Auto connect is off")
                 cancelLimitNotification()
+                cancelResumeNotification()
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
                 return START_NOT_STICKY
@@ -144,7 +163,19 @@ class AutoLoginService : Service() {
             try {
                 Log.i(TAG, "attempt network=$network")
                 AppState.set(AppState.Connection.CHECKING, "Signing in…")
-                val result = SentryTracing.trace("portal.login", "portal") {
+                val result = SentryTracing.trace(
+                    name = "portal.login",
+                    operation = "portal",
+                    classify = { r: PortalClient.Result ->
+                        when {
+                            r.ok -> PortalOutcome.OK
+                            r.sessionLimit -> PortalOutcome.SESSION_LIMIT
+                            r.bindError -> PortalOutcome.BIND_ERROR
+                            else -> PortalOutcome.FAILED
+                        }
+                    }
+                ) {
+                    SentryTracing.tag("portal.trigger", "auto")
                     PortalClient.login(
                         this@AutoLoginService, network, user, pass
                     )
@@ -226,6 +257,7 @@ class AutoLoginService : Service() {
                 Log.w(TAG, "login crashed", e)
                 Sentry.captureException(e) { scope ->
                     scope.setTag("portal.phase", "login")
+                    scope.setTag("portal.result", "exception")
                     scope.setTag("service", "AutoLoginService")
                 }
                 transientRetries = 0
@@ -269,6 +301,58 @@ class AutoLoginService : Service() {
         }
     }
 
+    /**
+     * The OS rejects startForeground() when the app was not eligible to start a
+     * foreground service. That is a normal condition for a background restart,
+     * so it must never take the process down.
+     */
+    private fun enterForeground(text: String): Boolean = try {
+        startForeground(NOTIF_ID, notification(text))
+        true
+    } catch (e: ForegroundServiceStartNotAllowedException) {
+        Log.w(TAG, "startForeground() denied by the OS", e)
+        false
+    }
+
+    /**
+     * A plain notification is not a foreground one, so it is always allowed.
+     * Tapping it opens the activity, which restarts the service while the app
+     * is visible, where startForeground() is permitted again.
+     */
+    private fun postResumeNotification() {
+        if (!runCatching { Prefs.enabled(this) }.getOrDefault(false)) return
+        val open = PendingIntent.getActivity(
+            this, 5, Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val notification = NotificationCompat.Builder(this, CHANNEL)
+            .setSmallIcon(R.drawable.ic_stat_wifi)
+            .setContentTitle("Auto-login paused")
+            .setContentText("Android stopped the background service. Tap to resume.")
+            .setStyle(
+                NotificationCompat.BigTextStyle().bigText(
+                    "Android stopped the background service while the app was " +
+                        "not in use. Open CURAJ Auto Login to turn auto-login " +
+                        "back on."
+                )
+            )
+            .setContentIntent(open)
+            .setAutoCancel(true)
+            .setOnlyAlertOnce(true)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .build()
+        runCatching {
+            getSystemService(NotificationManager::class.java)
+                .notify(NOTIF_RESUME_ID, notification)
+        }
+    }
+
+    private fun cancelResumeNotification() {
+        runCatching {
+            getSystemService(NotificationManager::class.java).cancel(NOTIF_RESUME_ID)
+        }
+    }
+
     private fun createChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val nm = getSystemService(NotificationManager::class.java)
@@ -298,7 +382,7 @@ class AutoLoginService : Service() {
             this, if (limit) 4 else 0, openIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-        val loginNow = PendingIntent.getService(
+        val loginNow = PendingIntent.getForegroundService(
             this, 1,
             Intent(this, AutoLoginService::class.java).setAction(ACTION_LOGIN_NOW),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
@@ -309,7 +393,7 @@ class AutoLoginService : Service() {
                 .putExtra(MainActivity.EXTRA_MANAGE_SESSIONS, true),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-        val pause = PendingIntent.getService(
+        val pause = PendingIntent.getForegroundService(
             this, 2,
             Intent(this, AutoLoginService::class.java).setAction(ACTION_PAUSE),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
@@ -409,6 +493,9 @@ class AutoLoginService : Service() {
     override fun onDestroy() {
         NetworkMonitor.stop(this)
         scope.cancel()
+        // A service that ran normally is being stopped on purpose (pause, logout,
+        // auto-connect off), so the "paused by Android" hint is stale.
+        if (!foregroundDenied) cancelResumeNotification()
         super.onDestroy()
     }
 
@@ -420,6 +507,7 @@ class AutoLoginService : Service() {
         private const val CHANNEL_LIMIT = "session_limit"
         private const val NOTIF_ID = 41
         private const val NOTIF_LIMIT_ID = 42
+        private const val NOTIF_RESUME_ID = 43
         private const val POLL_MS = 60_000L
         private const val COOLDOWN_MS = 20_000L
 
