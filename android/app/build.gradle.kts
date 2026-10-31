@@ -54,6 +54,9 @@ android {
             "SENTRY_DSN",
             "\"${sentryDsn.replace("\\", "\\\\").replace("\"", "\\\"")}\""
         )
+        // The UI has only English strings. Material/AndroidX otherwise pull in
+        // translations for every locale they support.
+        resourceConfigurations += listOf("en")
     }
 
     signingConfigs {
@@ -75,7 +78,8 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             isDebuggable = false
             if (hasReleaseSigning) {
                 signingConfig = signingConfigs.getByName("release")
@@ -89,6 +93,15 @@ android {
 
     buildFeatures {
         buildConfig = true
+    }
+
+    packaging {
+        resources {
+            excludes += setOf(
+                "DebugProbesKt.bin",
+                "kotlin-tooling-metadata.json"
+            )
+        }
     }
 
     compileOptions {
@@ -120,5 +133,8 @@ dependencies {
     implementation("com.google.android.material:material:1.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation(platform("io.sentry:sentry-bom:8.61.1"))
-    implementation("io.sentry:sentry-android")
+    // Core includes crash/error/performance reporting and SentryAndroid.init.
+    // The app has no native code and does not use Session Replay, so the NDK
+    // and Replay artifacts would only add package size.
+    implementation("io.sentry:sentry-android-core")
 }
