@@ -21,11 +21,11 @@ Build output:
 ```
 app-release.apk 9.3 MB
 package         in.ac.curaj.autologin
-versionName     1.6  (versionCode 7)
+versionName     1.6.2  (versionCode 9)
 minSdk          26
 targetSdk       35
 signature       APK Signature Scheme v2 (release key)
-sha256          eb647a9254cf54eaa9fdef234662a047c2743388ceb284ce2a516d8b24faca44
+sha256          1e192fa13e36247454728fe23fd12f13a1cb84dbddb220144b73752e224c1832
 ```
 
 ---
@@ -204,6 +204,14 @@ The first APK compiled but exposed two runtime issues that are now fixed in
   usernames, and passwords scrubbed.
 * `MY_PACKAGE_REPLACED` is registered so the foreground service restarts after
   an app update as well as after boot.
+
+1.6.2 is the stability/tracing patch:
+
+* A denied background `startForeground()` no longer crash-loops the process
+  (CURAJ-WIFI-2); it posts an **Auto-login paused** notification and the
+  notification actions now use `getForegroundService`.
+* Every portal HTTP/socket request is an `http.client` Sentry child span with
+  `portal.step`, sanitized URL, response status, and outcome tags.
 
 The full engineering narrative is in
 [ANDROID-ARCHITECTURE.md](ANDROID-ARCHITECTURE.md).

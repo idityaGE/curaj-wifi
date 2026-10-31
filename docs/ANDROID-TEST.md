@@ -301,6 +301,14 @@ were prepared. Do them with the cable or wireless debugging connected:
 > **Online**, and **Log out** verification only succeeds when the NAS gate
 > actually closed (a `400` from the gateway Squid must not be read as
 > "logged out").
+>
+> **1.6.2 addendum:** these checks still apply (release string
+> `in.ac.curaj.autologin@1.6.2+9`). 1.6.2 additionally fixes the CURAJ-WIFI-2
+> crash loop when Android denies a background foreground-service start and adds
+> per-request `http.client` child spans. Confirm that a denied start shows the
+> **Auto-login paused** notification instead of a crash loop, and that the
+> child spans below appear in `portal.login`, `portal.logout`,
+> `portal.sessions.list`, and `portal.sessions.close`.
 
 1. **Fresh install default**
    - Uninstall the app, install 1.6, and open it.
@@ -340,6 +348,14 @@ were prepared. Do them with the cable or wireless debugging connected:
    - Trigger a wrong-password login and confirm the transaction has
      `portal.result=failed` and a non-OK status. Confirm no span or transaction
      data contains credentials, query strings, cookies, or request bodies.
+7. **Foreground-service denial (1.6.2)**
+   - If the denial path can be triggered on the test device (for example an
+     OEM background process kill followed by a sticky restart), confirm the
+     app does not crash-loop.
+   - An **Auto-login paused** notification should appear. Tapping it opens
+     `MainActivity` and restarts the service from the visible activity.
+   - `adb logcat -s AutoLoginService` should show the denial warning without a
+     repeating `Unable to create service` loop.
 
 ## 9. What to test manually
 
@@ -378,6 +394,10 @@ were prepared. Do them with the cable or wireless debugging connected:
   `30ec1785b17482e66fce9ed78dda92afd695633759b6a6ea187b7b62eb367e1b`.
 * The 1.6 release APK is versionCode 7, SHA-256
   `eb647a9254cf54eaa9fdef234662a047c2743388ceb284ce2a516d8b24faca44`.
+* The 1.6.1 release APK is versionCode 8, SHA-256
+  `906887ea15e30c153cff9cd3fd84528514f6215aa86be05448f2fa17ee835faf`.
+* The 1.6.2 release APK is versionCode 9, SHA-256
+  `1e192fa13e36247454728fe23fd12f13a1cb84dbddb220144b73752e224c1832`.
   The distributed APK is release-signed; the debug variant is only for local
   development.
 * Android may show “unknown app” warnings when installing a release APK by

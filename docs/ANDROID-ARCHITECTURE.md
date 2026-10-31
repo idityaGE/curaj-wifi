@@ -22,16 +22,16 @@ Companion documents:
 | item | value |
 |---|---|
 | application id | `in.ac.curaj.autologin` |
-| version | **1.6** (versionCode **7**) |
+| version | **1.6.2** (versionCode **9**) |
 | language | Kotlin |
 | minimum SDK | 26 (Android 8.0) |
 | target / compile SDK | 35 (Android 15) |
 | build | Gradle 8.14.6 wrapper, AGP 8.7.3, Kotlin 2.0.21, JDK 17 |
 | monitoring | Sentry Android 8.61.1, Gradle plugin 6.24.0 |
 | debug APK | `android/app/build/outputs/apk/debug/app-debug.apk` |
-| production APK | `dist/CURAJ-AutoLogin-1.6.apk` (release-signed) |
-| production SHA-256 | `eb647a9254cf54eaa9fdef234662a047c2743388ceb284ce2a516d8b24faca44` |
-| tested device | OnePlus CPH2793, Android 16 (1.5); 1.6 build/signature verified, on-device pass pending |
+| production APK | `dist/CURAJ-AutoLogin-1.6.2.apk` (release-signed) |
+| production SHA-256 | `1e192fa13e36247454728fe23fd12f13a1cb84dbddb220144b73752e224c1832` |
+| tested device | OnePlus CPH2793, Android 16 (1.5 live); 1.6.2 build/signature verified, on-device pass pending |
 | campus Wi-Fi | `CURAJ CAMPUS CONNECT`, `wlan0`, `10.50.13.252/20` |
 | portal | `http://122.252.242.93/userportal` |
 
@@ -798,6 +798,57 @@ successful logout.
 
 ---
 
+### 9.13 Foreground-service start denied after a background restart (1.6.2)
+
+**Symptom**
+
+The app disappeared and immediately came back in a crash loop after Android
+or the OEM had killed the process in the background. The report is
+CURAJ-WIFI-2; logcat shows `Unable to create service
+in.ac.curaj.autologin/.AutoLoginService` with
+`android.app.ForegroundServiceStartNotAllowedException`.
+
+**Cause**
+
+Android 12+ only allows `Service.startForeground()` when the system recorded
+the start as foreground-eligible. A sticky resurrection after a process kill,
+or a plain `startService()` from a notification action, leaves
+`mAllowStartForeground` false. `onCreate()` called `startForeground()`
+unconditionally, so the platform failed service creation and killed the app
+process. The sticky restart then reused the same false flag, repeating the
+crash.
+
+**Fix**
+
+* `onCreate()` enters the foreground through `enterForeground()`, which catches
+  the denial. It sets `foregroundDenied`, posts a plain (non-FGS)
+  **Auto-login paused** notification, and calls `stopSelf()` instead of
+  crashing. `NetworkMonitor.start()` is after the guard, so the denial path
+  does not leak a monitor.
+* `onStartCommand()` returns `START_NOT_STICKY` when the start was denied, so
+  the system stops rescheduling a service that cannot start. Normal runs still
+  return `START_STICKY`.
+* The recovery notification is a normal low-priority notification (no FGS
+  involved), so it is always allowed. Its tap opens `MainActivity`, whose
+  `onStart()` restarts the service from a visible activity, where
+  `startForeground()` is permitted. It is cancelled on a successful start,
+  on pause, and on a normal `onDestroy()`; it survives the denial path.
+* The **Login now** and **Pause** notification actions use
+  `PendingIntent.getForegroundService`, so a tap is delivered as a
+  foreground-service start rather than a plain `startService()` that leaves the
+  allowance false.
+* The denial check compares the API-31 exception class name behind an SDK
+  check instead of referencing the class directly, so the guard also loads on
+  Android 8-11.
+
+**Verification**
+
+`assembleDebug`, `lintDebug`, and `assembleRelease` pass. The physical-device
+denial/restart path still needs a live pass; see
+[ANDROID-TEST.md](ANDROID-TEST.md#86-16-auto-connect-and-sentry-pending-on-device).
+
+---
+
 ## 10. Build, install, and test
 
 ### Build
@@ -894,6 +945,7 @@ Approximate evolution from the build/test notes:
 | 1.5 | 6 | Material 3 redesign, live network dashboard (SSID/signal/IP/band/latency/loss/throughput/link), auto-saving account fields, dynamic Connect now → Log out, session sheet with spinner/auto-refresh, shared `NetworkMonitor` and fresh-network `EPERM` retry |
 | 1.6 | 7 | Auto connect on by default and starts after first credential save; Sentry crash/performance monitoring with source context, portal transactions, EPERM warning events, and credential/PII scrubbing |
 | 1.6.1 | 8 | online checks moved to a proxy-form raw-socket check (`isOnline`) because the gateway Squid rejects origin-form HTTP with 400 even for authenticated clients; logout verification no longer mistakes that 400 for success |
+| 1.6.2 | 9 | foreground-service start denial no longer crash-loops (CURAJ-WIFI-2); recovery notification and foreground-service notification actions; per-request `http.client` Sentry spans with `portal.step` and outcome tags |
 
 ---
 
