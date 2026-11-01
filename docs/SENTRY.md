@@ -18,7 +18,9 @@ transactions (with per-request child spans) to Sentry project
   the method, the sanitized path, the response status, and a `portal.step`
   label (`online_check`, `probe`, `splash`, `login_page`, `newlogin`,
   `logout`, `session_close`, `sessions_page`, and so on). Retries and endpoint
-  fallbacks appear as separate spans.
+  fallbacks appear as separate spans. The online check races all four fixed
+  IPs, so it can produce up to four parallel `online_check` spans; losing
+  spans are finished as cancelled.
 - A `portal.result` tag on every portal transaction: `ok`, `failed`,
   `session_limit`, `bind_error`, or `exception`. Expected failures use a
   non-OK status instead of being reported as `ok`. A successful session list
@@ -32,7 +34,7 @@ Expected portal trace shapes:
 
 ```text
 portal.login
-├── http.client GET /generate_204            portal.step=online_check
+├── http.client GET /generate_204            portal.step=online_check (up to 4, parallel)
 ├── http.client GET /generate_204            portal.step=probe
 ├── http.client GET /userportal/             portal.step=splash
 ├── http.client POST /userportal/login.do    portal.step=login_page

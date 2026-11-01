@@ -324,6 +324,9 @@ How it behaves:
   Wi-Fi `Network`; portal sockets are bound to it so a mobile-data connection
   cannot steal credentials and a stale network cannot cause the intermittent
   `EPERM` bind failure.
+* The authoritative online check races all four fixed Google `generate_204`
+  IPs in parallel; the first `204` wins, so a blackholed endpoint cannot add
+  four socket timeouts to a poll.
 * It identifies the campus portal by the redirect host (`122.252.242.93`), and
   `PORTAL_HOSTS` refuses to send credentials to any other host — so a hostile
   Wi-Fi cannot harvest the password with a fake `/userportal` page.

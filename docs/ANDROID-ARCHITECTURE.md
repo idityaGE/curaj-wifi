@@ -300,6 +300,11 @@ Wi-Fi `Network` therefore failed before the app ever reached the portal.
 The request is made with `network.openConnection(URL)`, which pins it to the
 Wi-Fi `Network`. Mobile data cannot win the route.
 
+This probe is used only for splash/portal discovery and still tries the IPs in
+order. The authoritative online check (§9.12) races all four in parallel and
+takes the first `204`, so one blackholed endpoint costs one socket timeout
+instead of four.
+
 ### 5.2 Portal discovery
 
 `findPortal()` extracts candidates from:
@@ -794,6 +799,9 @@ successful logout.
   proxy-form request target
   `GET http://connectivitycheck.gstatic.com/generate_204 HTTP/1.1`,
   response head only (the status line is all an online check needs).
+* The four online checks run in parallel; the first `204` wins. Checks that
+  lose the race have their Sentry spans finished as cancelled before the
+  parent transaction closes, and their sockets are left to time out.
 * Every online check — entry "already online", in-progress wait, post-login
   verification, logout verification — now calls `isOnline()`.
 * The origin-form `probe()` remains only for splash/portal discovery, where

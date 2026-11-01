@@ -100,7 +100,9 @@ adb shell 'curl --interface wlan0 http://142.251.150.120/generate_204'
 
 ## 3. The fix
 
-`PortalClient` now probes four Google `generate_204` IPs in order:
+`PortalDiscovery` probes four Google `generate_204` IPs in order for splash
+discovery. The authoritative online check races the same four IPs in parallel
+and takes the first `204`:
 
 ```kotlin
 private val CHECK_URLS = listOf(

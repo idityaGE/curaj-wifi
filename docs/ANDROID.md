@@ -224,11 +224,13 @@ the exact local JDK 17 + command-line SDK setup.
    `network.openConnection(url)`. That pins the request to Wi-Fi even when
    mobile data is the default route — the Android equivalent of Linux
    `SO_BINDTODEVICE`.
-3. Probe one of the fixed Google `generate_204` IP addresses
-   (`http://142.251.150.120/generate_204`, then fallbacks).
-   * `204` → already online; done.
-   * anything else → parse the portal URL from `Location`, a meta refresh, a
-     JS redirect, or a `/userportal/?...` URL in the body.
+3. Run the authoritative online check against all four fixed Google
+   `generate_204` IPs in parallel (`http://142.251.150.120/generate_204` and
+   the three fallbacks).
+   * any `204` → already online; done.
+   * otherwise, probe the IPs in order to discover the portal, then parse the
+     portal URL from `Location`, a meta refresh, a JS redirect, or a
+     `/userportal/?...` URL in the body.
    IPs are used instead of the hostname because the captive Wi-Fi returns
    NXDOMAIN for `connectivitycheck.gstatic.com` before login.
 4. `GET` the portal URL, keep `JSESSIONID`.

@@ -2,9 +2,18 @@ package `in`.ac.curaj.autologin
 
 import android.net.Network
 import android.util.Log
+import io.sentry.ISpan
+import io.sentry.SpanStatus
 import java.io.IOException
 import java.net.InetSocketAddress
 import java.net.URI
+import java.util.concurrent.Callable
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.ExecutorCompletionService
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.Future
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Portal discovery and the authoritative online check.
@@ -41,6 +50,17 @@ internal object PortalDiscovery {
     )
 
     private val CHECK_URLS = CHECK_IPS.map { "http://$it/generate_204" }
+
+    /**
+     * Daemon threads only: an online check may outlive its caller by at most
+     * one socket timeout after the race is won, and must never keep the
+     * process alive.
+     */
+    private val checkExecutor: ExecutorService by lazy {
+        Executors.newFixedThreadPool(CHECK_IPS.size) { runnable ->
+            Thread(runnable, "portal-online-check").apply { isDaemon = true }
+        }
+    }
 
     /**
      * Credentials are only ever posted to the real campus portal. Without
@@ -152,31 +172,51 @@ internal object PortalDiscovery {
      * Only the response head is read - the status line carries everything this
      * check needs (a 204 has no body, and the pre-auth splash body is parsed by
      * findPortal from probe(), not here).
+     *
+     * All four fixed IPs are raced instead of tried in order. A blackholed
+     * endpoint therefore costs one socket timeout, not four, while the first
+     * 204 still returns immediately. Losers are left to time out in the
+     * background; their Sentry spans are finished as cancelled before this
+     * method returns so the parent transaction can close safely.
      */
     fun isOnline(network: Network, step: String = "online_check"): Boolean {
-        for (host in CHECK_IPS) {
-            try {
-                if (proxyFormStatus(network, host, step) == 204) return true
-            } catch (e: Exception) {
-                Log.w(TAG, "online check failed: ${e.message}")
-            }
+        val checks = CHECK_IPS.map { host ->
+            val span = SentryTracing.startHttpSpan(
+                "GET",
+                "http://connectivitycheck.gstatic.com/generate_204",
+                step
+            )
+            span?.setData("server.address", host)
+            OnlineCheck(span) { proxyFormStatus(network, host) }
         }
-        return false
+        val completion = ExecutorCompletionService<Int>(checkExecutor)
+        val futures = mutableListOf<Future<Int>>()
+        try {
+            checks.forEach { futures += completion.submit(it) }
+            repeat(checks.size) {
+                val future = completion.take()
+                try {
+                    if (future.get() == 204) return true
+                } catch (e: ExecutionException) {
+                    val cause = e.cause ?: e
+                    Log.w(TAG, "online check failed: ${cause.message}")
+                }
+            }
+            return false
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            return false
+        } finally {
+            // The loser spans must not outlive the portal transaction that
+            // created them. cancel(false) stops queued checks from starting
+            // without interrupting sockets that are already in flight.
+            checks.forEach { it.cancelSpan() }
+            futures.forEach { it.cancel(false) }
+        }
     }
 
-    private fun proxyFormStatus(network: Network, host: String, step: String): Int {
-        val span = SentryTracing.startHttpSpan(
-            "GET",
-            "http://connectivitycheck.gstatic.com/generate_204",
-            step
-        )
-        span?.setData("server.address", host)
-        val socket = try {
-            network.socketFactory.createSocket()
-        } catch (e: Throwable) {
-            SentryTracing.failHttpSpan(span, e)
-            throw e
-        }
+    private fun proxyFormStatus(network: Network, host: String): Int {
+        val socket = network.socketFactory.createSocket()
         try {
             socket.tcpNoDelay = true
             socket.connect(InetSocketAddress(host, 80), PROBE_TIMEOUT_MS)
@@ -190,15 +230,48 @@ internal object PortalDiscovery {
                     "Connection: close\r\n\r\n").toByteArray()
             )
             val head = PortalHttp.readResponseHead(socket.getInputStream())
-            val status = STATUS_LINE.find(head)?.groupValues?.get(1)?.toInt()
+            return STATUS_LINE.find(head)?.groupValues?.get(1)?.toInt()
                 ?: throw IOException("unparseable probe response")
-            SentryTracing.finishHttpSpan(span, status)
-            return status
-        } catch (e: Throwable) {
-            SentryTracing.failHttpSpan(span, e)
-            throw e
         } finally {
             runCatching { socket.close() }
+        }
+    }
+
+    /** One IP in the online-check race; owns exactly one Sentry span. */
+    private class OnlineCheck(
+        private val span: ISpan?,
+        private val check: () -> Int
+    ) : Callable<Int> {
+        private val spanDone = AtomicBoolean(false)
+
+        override fun call(): Int {
+            var status: Int? = null
+            var failure: Throwable? = null
+            try {
+                val value = check()
+                status = value
+                return value
+            } catch (t: Throwable) {
+                failure = t
+                throw t
+            } finally {
+                if (spanDone.compareAndSet(false, true)) {
+                    val error = failure
+                    if (error != null) {
+                        SentryTracing.failHttpSpan(span, error)
+                    } else {
+                        SentryTracing.finishHttpSpan(span, status)
+                    }
+                }
+            }
+        }
+
+        /** Finish a span whose check lost the race or was never started. */
+        fun cancelSpan() {
+            if (spanDone.compareAndSet(false, true)) {
+                span?.status = SpanStatus.CANCELLED
+                span?.finish()
+            }
         }
     }
 }
