@@ -95,6 +95,16 @@ class MainActivity : AppCompatActivity() {
         hadCredentials = Prefs.username(this).isNotBlank() &&
             Prefs.password(this).isNotBlank()
 
+        if (Prefs.consumeResetNotice()) {
+            MaterialAlertDialogBuilder(this)
+                .setTitle("Credentials cleared")
+                .setMessage(
+                    "Saved credentials could not be decrypted. Enter them again."
+                )
+                .setPositiveButton(android.R.string.ok, null)
+                .show()
+        }
+
         username.doAfterTextChanged { scheduleSave() }
         password.doAfterTextChanged { scheduleSave() }
         enabled.setOnCheckedChangeListener { _, checked ->
