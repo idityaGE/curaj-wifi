@@ -74,9 +74,7 @@ object NetworkMonitor {
                 caps: NetworkCapabilities
             ) = accept(network)
 
-            override fun onLost(network: Network) {
-                if (_wifi.value?.network == network) _wifi.value = null
-            }
+            override fun onLost(network: Network) = lost(network)
         }
         // Only remember the callback once registration succeeded. If it
         // failed, a later start() can try again and activeNetwork still works.
@@ -105,6 +103,7 @@ object NetworkMonitor {
     }
 
     /** Fresh network to use for portal requests, or null while Wi-Fi is absent. */
+    @Synchronized
     fun current(): Network? {
         val cm = manager ?: return null
         val saved = _wifi.value
@@ -127,9 +126,17 @@ object NetworkMonitor {
             caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
     }
 
+    @Synchronized
     private fun accept(network: Network) {
+        if (manager == null) return
         if (!isWifi(network)) return
         _wifi.value = Wifi(network, readDetails(network))
+    }
+
+    @Synchronized
+    private fun lost(network: Network) {
+        if (manager == null) return
+        if (_wifi.value?.network == network) _wifi.value = null
     }
 
     // WifiInfo.connectionInfo and the two-argument calculateSignalLevel are

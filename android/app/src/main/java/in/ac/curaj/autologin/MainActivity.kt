@@ -182,11 +182,20 @@ class MainActivity : AppCompatActivity() {
     override fun onStart() {
         super.onStart()
         NetworkMonitor.start(this)
+        // The notification Pause action can change Prefs while this activity is
+        // stopped. Sync the switch before deciding whether to start the service;
+        // otherwise a later text edit would save the stale checked state back.
+        val autoConnect = Prefs.enabled(this)
+        if (enabled.isChecked != autoConnect) {
+            switchGuard = true
+            enabled.isChecked = autoConnect
+            switchGuard = false
+        }
         // Starting from a visible activity is always allowed, so this also
         // recovers auto-login after Android or the OEM stopped the service in
         // the background. It runs on every foreground entry, including the
         // singleTop onNewIntent path from the "Auto-login paused" notification.
-        if (Prefs.enabled(this) &&
+        if (autoConnect &&
             Prefs.username(this).isNotBlank() &&
             Prefs.password(this).isNotBlank()
         ) {
