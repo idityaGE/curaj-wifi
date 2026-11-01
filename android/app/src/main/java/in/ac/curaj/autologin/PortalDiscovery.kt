@@ -166,6 +166,14 @@ internal object PortalDiscovery {
             ?.substringBefore(';')
 
     /**
+     * Result of the online-check race. [responded] distinguishes a captive
+     * portal that answered with a non-204 from a network that produced no
+     * response at all. Logout verification must not treat the latter as proof
+     * that the session is gone.
+     */
+    internal data class OnlineResult(val online: Boolean, val responded: Boolean)
+
+    /**
      * Authoritative online check: 204 from a Google generate_204 endpoint.
      *
      * Only the response head is read - the status line carries everything this
@@ -178,7 +186,13 @@ internal object PortalDiscovery {
      * background; their Sentry spans are finished as cancelled before this
      * method returns so the parent transaction can close safely.
      */
-    fun isOnline(network: Network, step: String = "online_check"): Boolean {
+    fun isOnline(network: Network, step: String = "online_check"): Boolean =
+        checkOnline(network, step).online
+
+    internal fun checkOnline(
+        network: Network,
+        step: String = "online_check"
+    ): OnlineResult {
         val checks = CHECK_IPS.map { host ->
             val span = SentryTracing.startHttpSpan(
                 "GET",
@@ -190,21 +204,24 @@ internal object PortalDiscovery {
         }
         val completion = ExecutorCompletionService<Int>(checkExecutor)
         val futures = mutableListOf<Future<Int>>()
+        var responded = false
         try {
             checks.forEach { futures += completion.submit(it) }
             repeat(checks.size) {
                 val future = completion.take()
                 try {
-                    if (future.get() == 204) return true
+                    val status = future.get()
+                    responded = true
+                    if (status == 204) return OnlineResult(true, true)
                 } catch (e: ExecutionException) {
                     val cause = e.cause ?: e
                     Log.w(TAG, "online check failed: ${cause.message}")
                 }
             }
-            return false
+            return OnlineResult(false, responded)
         } catch (e: InterruptedException) {
             Thread.currentThread().interrupt()
-            return false
+            return OnlineResult(false, false)
         } finally {
             // The loser spans must not outlive the portal transaction that
             // created them. cancel(false) stops queued checks from starting

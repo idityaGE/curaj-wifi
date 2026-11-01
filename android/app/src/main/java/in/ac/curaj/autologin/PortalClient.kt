@@ -386,8 +386,10 @@ object PortalClient {
         repeat(4) {
             Thread.sleep(1000)
             // isOnline (not the origin-form probe): a 400 from the gateway
-            // Squid must not be mistaken for "logged out".
-            if (!isOnline(network, "verify_logout")) {
+            // Squid must not be mistaken for "logged out". A network with no
+            // response at all is not evidence either; fail closed instead.
+            val check = PortalDiscovery.checkOnline(network, "verify_logout")
+            if (!check.online && check.responded) {
                 return Result(true, "logged out")
             }
         }

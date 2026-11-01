@@ -275,7 +275,9 @@ HTTP call. Without that, the next poll would log straight back in. The
 `newlogin.do` bind may briefly look like a login to the portal; that is
 intentional, and the immediate `logout.do` removes it. If logout cannot be
 verified, the app still leaves auto-login off and records `Logout failed: …`;
-the user can turn **Auto connect** back on.
+the user can turn **Auto connect** back on. “Verified” requires at least one
+online-check endpoint to answer with a non-204 response; a network where every
+endpoint errors is treated as unverified, not as a successful logout.
 
 ---
 
@@ -811,6 +813,10 @@ successful logout.
 * The four online checks run in parallel; the first `204` wins. Checks that
   lose the race have their Sentry spans finished as cancelled before the
   parent transaction closes, and their sockets are left to time out.
+* `checkOnline()` also reports whether any endpoint answered. Logout
+  verification only accepts a non-204 answer as proof of logout; if every
+  endpoint errors, it reports `could not verify logout` and leaves auto-login
+  off.
 * Every online check — entry "already online", in-progress wait, post-login
   verification, logout verification — now calls `isOnline()`.
 * The origin-form `probe()` remains only for splash/portal discovery, where
