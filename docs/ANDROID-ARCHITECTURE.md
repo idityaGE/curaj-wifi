@@ -378,6 +378,8 @@ gateway, and the four probe IPs in
   result, so pause/logout/service teardown wins over a late response.
 * `NetworkMonitor` serializes `start`/`stop`/`current` and callback updates, so
   a late callback after `stop` cannot republish a stale network.
+* Credential decryption for an attempt runs inside the IO coroutine, so a slow
+  Keystore cannot block `onStartCommand` or a network callback.
 * The notification text is guarded by a lock and compared before posting.
 
 ### 6.2 Failure backoff

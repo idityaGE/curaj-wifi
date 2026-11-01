@@ -186,30 +186,29 @@ class AutoLoginService : Service() {
             if (fromUser) lastManualAttempt = now
         }
 
-        val user: String
-        val pass: String
-        try {
-            user = Prefs.username(this)
-            pass = Prefs.password(this)
-        } catch (e: Exception) {
-            // Prefs normally recovers crypto failures itself. If it still
-            // throws, release busy or every later trigger would be ignored
-            // until the process restarts.
-            busy.set(false)
-            Log.w(TAG, "credential read failed", e)
-            AppState.set(AppState.Connection.FAILED, "Sign-in error")
-            update("Sign-in error")
-            return
-        }
-        if (user.isBlank() || pass.isBlank()) {
-            busy.set(false)
-            AppState.set(AppState.Connection.PAUSED, TEXT_NO_CREDENTIALS)
-            update(TEXT_NO_CREDENTIALS)
-            return
-        }
-
         scope.launch {
             try {
+                // Reading encrypted preferences can touch the Keystore; keep
+                // it on IO, not the caller (which may be onStartCommand's main
+                // thread).
+                val user: String
+                val pass: String
+                try {
+                    user = Prefs.username(this@AutoLoginService)
+                    pass = Prefs.password(this@AutoLoginService)
+                } catch (e: Exception) {
+                    if (!isActive) return@launch
+                    Log.w(TAG, "credential read failed", e)
+                    AppState.set(AppState.Connection.FAILED, "Sign-in error")
+                    update("Sign-in error")
+                    return@launch
+                }
+                if (user.isBlank() || pass.isBlank()) {
+                    AppState.set(AppState.Connection.PAUSED, TEXT_NO_CREDENTIALS)
+                    update(TEXT_NO_CREDENTIALS)
+                    return@launch
+                }
+
                 Log.i(TAG, "attempt network=$network")
                 // A healthy automatic poll is just an online check. Only a
                 // real login, or a user-initiated attempt, creates a trace and
