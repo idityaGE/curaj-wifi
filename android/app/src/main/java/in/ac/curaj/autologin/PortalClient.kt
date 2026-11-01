@@ -145,10 +145,11 @@ object PortalClient {
         network: Network,
         user: String,
         pass: String,
-        depth: Int = 0
+        depth: Int = 0,
+        skipInitialOnlineCheck: Boolean = false
     ): Result {
         return try {
-            loginOnce(ctx, network, user, pass, depth)
+            loginOnce(ctx, network, user, pass, depth, skipInitialOnlineCheck)
         } catch (e: Exception) {
             if (isBindError(e)) {
                 Log.w(TAG, "network bind failed; service will re-resolve Wi-Fi", e)
@@ -178,7 +179,8 @@ object PortalClient {
         network: Network,
         user: String,
         pass: String,
-        depth: Int
+        depth: Int,
+        skipInitialOnlineCheck: Boolean
     ): Result {
         if (user.isBlank() || pass.isBlank()) {
             return Result(false, "no credentials saved")
@@ -187,7 +189,7 @@ object PortalClient {
         // The online check is authoritative and independent of the
         // origin-form probe: post-auth the gateway Squid answers origin-form
         // HTTP with 400, which would look like a captive portal here.
-        if (isOnline(network)) {
+        if (!skipInitialOnlineCheck && isOnline(network)) {
             return Result(
                 true,
                 "already online",
@@ -341,7 +343,14 @@ object PortalClient {
                         kind = Result.Kind.ALREADY_ONLINE
                     )
                 }
-                return loginOnce(ctx, network, user, pass, depth + 1)
+                return loginOnce(
+                    ctx,
+                    network,
+                    user,
+                    pass,
+                    depth + 1,
+                    skipInitialOnlineCheck = true
+                )
             }
 
             return Result(false, "rejected: $reason")
@@ -350,8 +359,8 @@ object PortalClient {
         // 4. the portal sometimes answers before the NAS opens the gate;
         // the NAS can also blackhole briefly while switching, and isOnline
         // tolerates probe failures by falling through to the next endpoint.
-        repeat(6) {
-            Thread.sleep(1500)
+        for (delayMs in longArrayOf(1_000L, 2_000L, 4_000L)) {
+            Thread.sleep(delayMs)
             if (isOnline(network, "verify_online")) {
                 return Result(true, "logged in")
             }

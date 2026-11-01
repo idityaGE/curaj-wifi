@@ -83,6 +83,6 @@ class NetworkMetricsSampler {
     }
 
     private companion object {
-        const val PROBES = 5
+        const val PROBES = 3
     }
 }

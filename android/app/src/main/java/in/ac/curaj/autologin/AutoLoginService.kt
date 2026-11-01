@@ -174,22 +174,39 @@ class AutoLoginService : Service() {
             try {
                 Log.i(TAG, "attempt network=$network")
                 AppState.set(AppState.Connection.CHECKING, "Signing in…")
-                val result = SentryTracing.trace(
-                    name = "portal.login",
-                    operation = "portal",
-                    classify = { r: PortalClient.Result ->
-                        when {
-                            r.ok -> PortalOutcome.OK
-                            r.sessionLimit -> PortalOutcome.SESSION_LIMIT
-                            r.bindError -> PortalOutcome.BIND_ERROR
-                            else -> PortalOutcome.FAILED
-                        }
-                    }
-                ) {
-                    SentryTracing.tag("portal.trigger", "auto")
-                    PortalClient.login(
-                        this@AutoLoginService, network, user, pass
+                // A healthy automatic poll is just an online check. Only a
+                // real login, or a user-initiated attempt, creates a trace.
+                val result = if (!force && PortalClient.isOnline(network)) {
+                    PortalClient.Result(
+                        true,
+                        "already online",
+                        kind = PortalClient.Result.Kind.ALREADY_ONLINE
                     )
+                } else {
+                    SentryTracing.trace(
+                        name = "portal.login",
+                        operation = "portal",
+                        classify = { r: PortalClient.Result ->
+                            when {
+                                r.ok -> PortalOutcome.OK
+                                r.sessionLimit -> PortalOutcome.SESSION_LIMIT
+                                r.bindError -> PortalOutcome.BIND_ERROR
+                                else -> PortalOutcome.FAILED
+                            }
+                        }
+                    ) {
+                        SentryTracing.tag(
+                            "portal.trigger",
+                            if (force) "manual" else "auto"
+                        )
+                        PortalClient.login(
+                            this@AutoLoginService,
+                            network,
+                            user,
+                            pass,
+                            skipInitialOnlineCheck = !force
+                        )
+                    }
                 }
                 Log.i(TAG, "login completed ok=${result.ok}")
                 when {

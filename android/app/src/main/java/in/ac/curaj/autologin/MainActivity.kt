@@ -253,7 +253,7 @@ class MainActivity : AppCompatActivity() {
                 networkRefreshing = false
                 networkProgress.isVisible = false
                 renderMetrics()
-                delay(5_000L)
+                delay(15_000L)
                 continue
             }
             if (metrics.updatedAt == 0L || networkRefreshing) {
@@ -264,7 +264,7 @@ class MainActivity : AppCompatActivity() {
             networkProgress.isVisible = false
             metrics = sampled
             renderMetrics()
-            delay(5_000L)
+            delay(15_000L)
         }
     }
 
@@ -303,7 +303,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun renderMetrics() {
         metricLatency.text = metrics.latencyMs?.let { "$it ms" } ?: "—"
-        metricLoss.text = metrics.lossPercent?.let { "$it%  (5 probes)" } ?: "—"
+        metricLoss.text = metrics.lossPercent?.let { "$it%  (3 probes)" } ?: "—"
         metricDownload.text = formatBps(metrics.downloadBps)
         metricUpload.text = formatBps(metrics.uploadBps)
         networkUpdated.text = if (metrics.updatedAt == 0L) {
