@@ -593,14 +593,21 @@ class MainActivity : AppCompatActivity() {
                     PortalClient.Result(false, it.message ?: it.javaClass.simpleName)
                 }
             }
+            val alreadyOnline =
+                result.kind == PortalClient.Result.Kind.ALREADY_ONLINE
             val text = when {
-                result.ok && result.message == "already online" ->
-                    "Online (already signed in)"
+                alreadyOnline -> "Online (already signed in)"
                 result.ok -> "Online"
                 result.sessionLimit -> "Session limit reached"
                 else -> "Sign-in failed: ${result.message}"
             }
-            Prefs.record(this@MainActivity, text)
+            val state = when {
+                alreadyOnline -> LastState.ALREADY_ONLINE
+                result.ok -> LastState.ONLINE
+                result.sessionLimit -> LastState.SESSION_LIMIT
+                else -> LastState.FAILED
+            }
+            Prefs.record(this@MainActivity, state, text)
             when {
                 result.ok -> AppState.set(AppState.Connection.ONLINE, text)
                 result.sessionLimit -> AppState.set(
@@ -688,7 +695,11 @@ class MainActivity : AppCompatActivity() {
                 }
             }
             val text = if (result.ok) "Logged out" else "Logout failed: ${result.message}"
-            Prefs.record(this@MainActivity, text)
+            Prefs.record(
+                this@MainActivity,
+                if (result.ok) LastState.LOGGED_OUT else LastState.FAILED,
+                text
+            )
             AppState.set(
                 if (result.ok) AppState.Connection.PAUSED else AppState.Connection.FAILED,
                 text

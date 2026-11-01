@@ -78,8 +78,10 @@ class SessionsSheet : BottomSheetDialogFragment() {
 
         viewLifecycleOwner.lifecycleScope.launch {
             while (isActive) {
-                delay(15_000L)
-                if (!loading && closingId == null) loadSessions(silent = true)
+                delay(30_000L)
+                if (!loading && closingId == null) {
+                    loadSessions(silent = true, trigger = "auto")
+                }
             }
         }.also { autoRefresh = it }
 
@@ -99,7 +101,10 @@ class SessionsSheet : BottomSheetDialogFragment() {
         super.onDestroyView()
     }
 
-    private fun loadSessions(silent: Boolean = false) {
+    private fun loadSessions(
+        silent: Boolean = false,
+        trigger: String = if (silent) "auto" else "manual"
+    ) {
         if (loading || closingId != null) return
         val user = Prefs.username(requireContext())
         val pass = Prefs.password(requireContext())
@@ -138,7 +143,7 @@ class SessionsSheet : BottomSheetDialogFragment() {
                             if (r.ok) PortalOutcome.OK else PortalOutcome.FAILED
                         }
                     ) {
-                        SentryTracing.tag("portal.trigger", "manual")
+                        SentryTracing.tag("portal.trigger", trigger)
                         PortalClient.listSessions(network, user, pass).also { r ->
                             if (r.ok) {
                                 SentryTracing.data(
@@ -149,7 +154,7 @@ class SessionsSheet : BottomSheetDialogFragment() {
                         }
                     }
                 }.onFailure {
-                    SentryTracing.captureHandled("sessions.list", "manual", it)
+                    SentryTracing.captureHandled("sessions.list", trigger, it)
                 }.getOrElse {
                     PortalClient.SessionsResult(
                         false,
@@ -258,7 +263,11 @@ class SessionsSheet : BottomSheetDialogFragment() {
             if (!isAdded) return@launch
             closingId = null
             if (result.ok) {
-                Prefs.record(requireContext(), "Logged out session ${session.startTime}")
+                Prefs.record(
+                    requireContext(),
+                    LastState.SESSION_CLOSED,
+                    "Logged out session ${session.startTime}"
+                )
                 onChanged?.invoke()
                 status.text = getString(R.string.session_closed)
                 status.isVisible = true
@@ -266,7 +275,7 @@ class SessionsSheet : BottomSheetDialogFragment() {
                     startReconnect()
                     status.text = "${getString(R.string.session_closed)} · Reconnecting…"
                 }
-                loadSessions(silent = true)
+                loadSessions(silent = true, trigger = "auto")
             } else {
                 showError("Could not log out session: ${result.message}")
                 renderLast()

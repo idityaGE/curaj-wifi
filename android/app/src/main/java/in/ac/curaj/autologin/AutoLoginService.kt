@@ -113,7 +113,7 @@ class AutoLoginService : Service() {
         when (intent?.action) {
             ACTION_PAUSE -> {
                 Prefs.setEnabled(this, false)
-                Prefs.record(this, "Paused by you")
+                Prefs.record(this, LastState.PAUSED, "Paused by you")
                 AppState.set(AppState.Connection.PAUSED, "Auto connect is off")
                 cancelLimitNotification()
                 cancelResumeNotification()
@@ -197,12 +197,22 @@ class AutoLoginService : Service() {
                         transientRetries = 0
                         noteSuccess()
                         cancelLimitNotification()
-                        val text = if (result.message == "already online") {
+                        val alreadyOnline =
+                            result.kind == PortalClient.Result.Kind.ALREADY_ONLINE
+                        val text = if (alreadyOnline) {
                             "Online (already signed in)"
                         } else {
                             "Online"
                         }
-                        Prefs.record(this@AutoLoginService, text)
+                        Prefs.record(
+                            this@AutoLoginService,
+                            if (alreadyOnline) {
+                                LastState.ALREADY_ONLINE
+                            } else {
+                                LastState.ONLINE
+                            },
+                            text
+                        )
                         AppState.set(AppState.Connection.ONLINE, text)
                         update(TEXT_CONNECTED)
                     }
@@ -210,7 +220,11 @@ class AutoLoginService : Service() {
                     result.sessionLimit -> {
                         transientRetries = 0
                         noteFailure()
-                        Prefs.record(this@AutoLoginService, TEXT_SESSION_LIMIT)
+                        Prefs.record(
+                            this@AutoLoginService,
+                            LastState.SESSION_LIMIT,
+                            TEXT_SESSION_LIMIT
+                        )
                         AppState.set(
                             AppState.Connection.SESSION_LIMIT,
                             TEXT_SESSION_LIMIT
@@ -259,7 +273,9 @@ class AutoLoginService : Service() {
                         transientRetries = 0
                         noteFailure()
                         val text = "Sign-in failed: ${result.message}"
-                        Prefs.record(this@AutoLoginService, text)
+                        Prefs.record(
+                            this@AutoLoginService, LastState.FAILED, text
+                        )
                         AppState.set(AppState.Connection.FAILED, text)
                         update(text)
                     }
@@ -274,7 +290,7 @@ class AutoLoginService : Service() {
                 transientRetries = 0
                 noteFailure()
                 val text = "Sign-in error: ${e.message ?: e.javaClass.simpleName}"
-                Prefs.record(this@AutoLoginService, text)
+                Prefs.record(this@AutoLoginService, LastState.FAILED, text)
                 AppState.set(AppState.Connection.FAILED, text)
                 update(text)
             } finally {
@@ -485,11 +501,10 @@ class AutoLoginService : Service() {
     private fun initialText(): String {
         if (Prefs.username(this).isBlank()) return TEXT_NO_CREDENTIALS
         if (NetworkMonitor.current() == null) return TEXT_DISCONNECTED
-        val last = Prefs.lastResult(this)
-        return when {
-            last.startsWith("Online") -> TEXT_CONNECTED
-            last.startsWith("Session limit") -> TEXT_SESSION_LIMIT
-            last.startsWith("Sign-in failed") || last.startsWith("Sign-in error") -> last
+        return when (Prefs.lastState(this)) {
+            LastState.ONLINE, LastState.ALREADY_ONLINE -> TEXT_CONNECTED
+            LastState.SESSION_LIMIT -> TEXT_SESSION_LIMIT
+            LastState.FAILED -> Prefs.lastResult(this).ifBlank { TEXT_RUNNING }
             else -> TEXT_RUNNING
         }
     }

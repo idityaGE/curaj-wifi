@@ -85,8 +85,25 @@ object PortalClient {
         /** The account already has its maximum two internet sessions. */
         val sessionLimit: Boolean = false,
         /** The selected Network was stale/not bindable; retry with a fresh one. */
-        val bindError: Boolean = false
-    )
+        val bindError: Boolean = false,
+        /** Typed outcome; UI and service decisions must use this, not [message]. */
+        val kind: Result.Kind = when {
+            ok -> Result.Kind.OK
+            sessionLimit -> Result.Kind.SESSION_LIMIT
+            bindError -> Result.Kind.BIND_ERROR
+            retryMs > 0 -> Result.Kind.RETRY
+            else -> Result.Kind.FAILED
+        }
+    ) {
+        enum class Kind {
+            OK,
+            ALREADY_ONLINE,
+            SESSION_LIMIT,
+            BIND_ERROR,
+            RETRY,
+            FAILED
+        }
+    }
 
     data class Session(
         val id: String,
@@ -144,7 +161,8 @@ object PortalClient {
                     false,
                     "Wi-Fi network is changing",
                     retryMs = 800L,
-                    bindError = true
+                    bindError = true,
+                    kind = Result.Kind.BIND_ERROR
                 )
             } else {
                 Result(
@@ -169,7 +187,13 @@ object PortalClient {
         // The online check is authoritative and independent of the
         // origin-form probe: post-auth the gateway Squid answers origin-form
         // HTTP with 400, which would look like a captive portal here.
-        if (isOnline(network)) return Result(true, "already online")
+        if (isOnline(network)) {
+            return Result(
+                true,
+                "already online",
+                kind = Result.Kind.ALREADY_ONLINE
+            )
+        }
 
         val first = try {
             probe(network)
@@ -265,7 +289,8 @@ object PortalClient {
                 return Result(
                     false,
                     "session limit reached (2 active)",
-                    sessionLimit = true
+                    sessionLimit = true,
+                    kind = Result.Kind.SESSION_LIMIT
                 )
             }
 
@@ -291,7 +316,8 @@ object PortalClient {
                 return Result(
                     false,
                     "portal is still authenticating; retrying",
-                    retryMs = 3000L
+                    retryMs = 3000L,
+                    kind = Result.Kind.RETRY
                 )
             }
 
@@ -309,7 +335,11 @@ object PortalClient {
                 }
                 Thread.sleep(1500)
                 if (isOnline(network, "verify_online")) {
-                    return Result(true, "already online")
+                    return Result(
+                        true,
+                        "already online",
+                        kind = Result.Kind.ALREADY_ONLINE
+                    )
                 }
                 return loginOnce(ctx, network, user, pass, depth + 1)
             }

@@ -9,6 +9,17 @@ import java.io.IOException
 import java.security.GeneralSecurityException
 import java.security.KeyStore
 
+enum class LastState {
+    ONLINE,
+    ALREADY_ONLINE,
+    SESSION_LIMIT,
+    FAILED,
+    PAUSED,
+    LOGGED_OUT,
+    SESSION_CLOSED,
+    UNKNOWN
+}
+
 /**
  * Credentials live in EncryptedSharedPreferences (AES-256-GCM values,
  * AES-256-SIV keys) backed by the Android Keystore. The last result is kept
@@ -27,6 +38,7 @@ object Prefs {
     private const val KEY_ENABLED = "enabled"
     private const val KEY_LAST_RESULT = "last_result"
     private const val KEY_LAST_TIME = "last_time"
+    private const val KEY_LAST_STATE = "last_state"
 
     @Volatile
     private var cached: SharedPreferences? = null
@@ -144,8 +156,17 @@ object Prefs {
     fun lastTime(ctx: Context): Long =
         read(ctx, 0L) { it.getLong(KEY_LAST_TIME, 0L) }
 
-    fun record(ctx: Context, result: String) = write(ctx) { editor ->
-        editor.putString(KEY_LAST_RESULT, result)
-            .putLong(KEY_LAST_TIME, System.currentTimeMillis())
-    }
+    fun lastState(ctx: Context): LastState =
+        read(ctx, LastState.UNKNOWN) { prefs ->
+            runCatching {
+                LastState.valueOf(prefs.getString(KEY_LAST_STATE, "").orEmpty())
+            }.getOrDefault(LastState.UNKNOWN)
+        }
+
+    fun record(ctx: Context, state: LastState, result: String) =
+        write(ctx) { editor ->
+            editor.putString(KEY_LAST_STATE, state.name)
+                .putString(KEY_LAST_RESULT, result)
+                .putLong(KEY_LAST_TIME, System.currentTimeMillis())
+        }
 }
