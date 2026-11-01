@@ -317,6 +317,7 @@ object PortalClient {
      * portal session, bind it with the saved credentials, then call logout.do
      * with that cookie, and finally the NAS logout as a fallback.
      */
+    @Synchronized
     fun logout(network: Network, user: String, pass: String): Result {
         if (user.isBlank() || pass.isBlank()) {
             return Result(false, "no credentials saved")
@@ -393,12 +394,14 @@ object PortalClient {
         return Result(false, "could not verify logout")
     }
 
+    @Synchronized
     fun listSessions(
         network: Network,
         user: String,
         pass: String
     ): SessionsResult = PortalSessions.listSessions(network, user, pass)
 
+    @Synchronized
     fun logoutSession(
         network: Network,
         user: String,

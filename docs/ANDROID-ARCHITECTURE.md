@@ -362,11 +362,18 @@ gateway, and the four probe IPs in
 
 ### 6.1 Serialization
 
-* `PortalClient.login()` is `@Synchronized`, so two callers cannot interleave
-  the probe/session/login steps.
+* `PortalClient.login()`, `logout()`, `listSessions()`, and `logoutSession()` are
+  `@Synchronized`, so a user logout or session close cannot interleave with the
+  service’s login flow. The read-only `isOnline()` check is deliberately not
+  serialized: it opens no portal session and never carries credentials.
 * `AutoLoginService` uses an `AtomicBoolean` (`busy`) so overlapping
   `onAvailable`, `onCapabilitiesChanged`, and poll events produce one attempt.
+  The attempt claims `busy` before it touches cooldown/backoff state, so a
+  losing trigger cannot reset the network or cancel a pending retry.
 * `attempt()` uses a 20-second cooldown per network to absorb callback bursts.
+* A blocking portal call cannot be interrupted mid-socket. The service checks
+  coroutine cancellation again before starting a login and before applying its
+  result, so pause/logout/service teardown wins over a late response.
 * The notification text is guarded by a lock and compared before posting.
 
 ### 6.2 Failure backoff

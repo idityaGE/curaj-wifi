@@ -152,6 +152,11 @@ class AutoLoginService : Service() {
         force: Boolean = false,
         fromUser: Boolean = false
     ) {
+        // Claim the attempt before touching cooldown/backoff state. Otherwise
+        // a trigger that loses this CAS can still reset the network, cancel a
+        // pending retry, or consume the manual cooldown while another attempt
+        // is running.
+        if (!busy.compareAndSet(false, true)) return
         val now = SystemClock.elapsedRealtime()
         synchronized(this) {
             if (network != lastNetwork) {
@@ -165,18 +170,37 @@ class AutoLoginService : Service() {
                 retryJob = null
                 limitNotified = false
             }
-            if (!force && now < backoffUntil) return
-            if (!force && now - lastAttempt < COOLDOWN_MS) return
-            if (fromUser) {
-                if (now - lastManualAttempt < MANUAL_COOLDOWN_MS) return
-                lastManualAttempt = now
+            if (!force && now < backoffUntil) {
+                busy.set(false)
+                return
+            }
+            if (!force && now - lastAttempt < COOLDOWN_MS) {
+                busy.set(false)
+                return
+            }
+            if (fromUser && now - lastManualAttempt < MANUAL_COOLDOWN_MS) {
+                busy.set(false)
+                return
             }
             lastAttempt = now
+            if (fromUser) lastManualAttempt = now
         }
-        if (!busy.compareAndSet(false, true)) return
 
-        val user = Prefs.username(this)
-        val pass = Prefs.password(this)
+        val user: String
+        val pass: String
+        try {
+            user = Prefs.username(this)
+            pass = Prefs.password(this)
+        } catch (e: Exception) {
+            // Prefs normally recovers crypto failures itself. If it still
+            // throws, release busy or every later trigger would be ignored
+            // until the process restarts.
+            busy.set(false)
+            Log.w(TAG, "credential read failed", e)
+            AppState.set(AppState.Connection.FAILED, "Sign-in error")
+            update("Sign-in error")
+            return
+        }
         if (user.isBlank() || pass.isBlank()) {
             busy.set(false)
             AppState.set(AppState.Connection.PAUSED, TEXT_NO_CREDENTIALS)
@@ -187,9 +211,9 @@ class AutoLoginService : Service() {
         scope.launch {
             try {
                 Log.i(TAG, "attempt network=$network")
-                AppState.set(AppState.Connection.CHECKING, "Signing in…")
                 // A healthy automatic poll is just an online check. Only a
-                // real login, or a user-initiated attempt, creates a trace.
+                // real login, or a user-initiated attempt, creates a trace and
+                // shows the transient "Signing in" state.
                 val result = if (!force && PortalClient.isOnline(network)) {
                     PortalClient.Result(
                         true,
@@ -197,6 +221,11 @@ class AutoLoginService : Service() {
                         kind = PortalClient.Result.Kind.ALREADY_ONLINE
                     )
                 } else {
+                    // The online check may have waited on another portal
+                    // operation (for example a user logout). Do not start a
+                    // login after this service was cancelled.
+                    if (!isActive) return@launch
+                    AppState.set(AppState.Connection.CHECKING, "Signing in…")
                     SentryTracing.trace(
                         name = "portal.login",
                         operation = "portal",
@@ -222,6 +251,10 @@ class AutoLoginService : Service() {
                         )
                     }
                 }
+                // A blocking portal call cannot be interrupted mid-socket, so
+                // re-check cancellation before applying its result. Pause,
+                // logout, or service teardown must win over a late response.
+                if (!isActive) return@launch
                 Log.i(TAG, "login completed ok=${result.ok}")
                 when {
                     result.ok -> {
@@ -309,6 +342,7 @@ class AutoLoginService : Service() {
                     }
                 }
             } catch (e: Exception) {
+                if (!isActive) return@launch
                 Log.w(TAG, "login crashed", e)
                 Sentry.captureException(e) { scope ->
                     scope.setTag("portal.phase", "login")

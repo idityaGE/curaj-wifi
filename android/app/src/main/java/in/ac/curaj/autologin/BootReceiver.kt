@@ -3,6 +3,7 @@ package `in`.ac.curaj.autologin
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.util.Log
 import androidx.core.content.ContextCompat
 
 class BootReceiver : BroadcastReceiver() {
@@ -16,7 +17,7 @@ class BootReceiver : BroadcastReceiver() {
         // main thread; goAsync() keeps the receiver alive until finish().
         val app = ctx.applicationContext
         val pending = goAsync()
-        Thread {
+        val worker = Thread {
             try {
                 val enabled = runCatching { Prefs.enabled(app) }.getOrDefault(false)
                 val user = runCatching { Prefs.username(app) }.getOrDefault("")
@@ -31,6 +32,10 @@ class BootReceiver : BroadcastReceiver() {
             } finally {
                 pending.finish()
             }
-        }.start()
+        }
+        runCatching { worker.start() }.onFailure {
+            Log.w("BootReceiver", "could not start boot worker", it)
+            pending.finish()
+        }
     }
 }
