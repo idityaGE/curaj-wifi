@@ -11,6 +11,7 @@ import android.net.NetworkRequest
 import android.net.wifi.WifiInfo
 import android.net.wifi.WifiManager
 import android.os.Build
+import android.util.Log
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -26,6 +27,7 @@ import java.net.Inet4Address
  * registered NetworkCallback always gives us a fresh, usable Network.
  */
 object NetworkMonitor {
+    private const val TAG = "NetworkMonitor"
 
     data class WifiDetails(
         val ssid: String?,
@@ -76,8 +78,13 @@ object NetworkMonitor {
                 if (_wifi.value?.network == network) _wifi.value = null
             }
         }
-        callback = cb
+        // Only remember the callback once registration succeeded. If it
+        // failed, a later start() can try again and activeNetwork still works.
         runCatching { cm.registerNetworkCallback(request, cb) }
+            .onSuccess { callback = cb }
+            .onFailure {
+                Log.w(TAG, "network callback registration failed", it)
+            }
 
         // This helps before the first callback arrives. It never consults
         // allNetworks, so it cannot select a stale network.

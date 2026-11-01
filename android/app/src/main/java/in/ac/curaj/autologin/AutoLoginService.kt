@@ -15,6 +15,7 @@ import androidx.core.app.NotificationCompat
 import io.sentry.Sentry
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
@@ -38,6 +39,8 @@ class AutoLoginService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val busy = AtomicBoolean(false)
     private var lastAttempt = 0L
+    private var lastManualAttempt = 0L
+    private var retryJob: Job? = null
     private var lastNetwork: Network? = null
     private var failures = 0
     private var backoffUntil = 0L
@@ -139,12 +142,16 @@ class AutoLoginService : Service() {
             AppState.set(AppState.Connection.OFFLINE, TEXT_DISCONNECTED)
             update(TEXT_DISCONNECTED)
         } else {
-            attempt(network, force)
+            attempt(network, force, fromUser = force)
         }
         return START_STICKY
     }
 
-    private fun attempt(network: Network, force: Boolean = false) {
+    private fun attempt(
+        network: Network,
+        force: Boolean = false,
+        fromUser: Boolean = false
+    ) {
         val now = SystemClock.elapsedRealtime()
         synchronized(this) {
             if (network != lastNetwork) {
@@ -153,10 +160,17 @@ class AutoLoginService : Service() {
                 transientRetries = 0
                 backoffUntil = 0L
                 lastAttempt = 0L
+                lastManualAttempt = 0L
+                retryJob?.cancel()
+                retryJob = null
                 limitNotified = false
             }
             if (!force && now < backoffUntil) return
             if (!force && now - lastAttempt < COOLDOWN_MS) return
+            if (fromUser) {
+                if (now - lastManualAttempt < MANUAL_COOLDOWN_MS) return
+                lastManualAttempt = now
+            }
             lastAttempt = now
         }
         if (!busy.compareAndSet(false, true)) return
@@ -265,10 +279,10 @@ class AutoLoginService : Service() {
                                 AppState.Connection.CHECKING,
                                 "Wi-Fi changed; retrying…"
                             )
-                            scope.launch {
-                                delay(result.retryMs.coerceAtLeast(800L))
-                                attempt(fresh, force = true)
-                            }
+                            scheduleRetry(
+                                fresh,
+                                result.retryMs.coerceAtLeast(800L)
+                            )
                         }
                     }
 
@@ -280,10 +294,7 @@ class AutoLoginService : Service() {
                             "Waiting for portal…"
                         )
                         val fresh = NetworkMonitor.current() ?: network
-                        scope.launch {
-                            delay(result.retryMs)
-                            attempt(fresh, force = true)
-                        }
+                        scheduleRetry(fresh, result.retryMs)
                     }
 
                     else -> {
@@ -326,10 +337,23 @@ class AutoLoginService : Service() {
         }
     }
 
+    /** One delayed retry at a time; a newer trigger replaces the pending one. */
+    private fun scheduleRetry(network: Network, delayMs: Long) {
+        synchronized(this) {
+            retryJob?.cancel()
+            retryJob = scope.launch {
+                delay(delayMs)
+                attempt(network, force = true)
+            }
+        }
+    }
+
     private fun noteSuccess() {
         synchronized(this) {
             failures = 0
             backoffUntil = 0L
+            retryJob?.cancel()
+            retryJob = null
         }
     }
 
@@ -547,6 +571,8 @@ class AutoLoginService : Service() {
     }
 
     override fun onDestroy() {
+        retryJob?.cancel()
+        retryJob = null
         NetworkMonitor.stop(this)
         scope.cancel()
         // A service that ran normally is being stopped on purpose (pause, logout,
@@ -568,6 +594,7 @@ class AutoLoginService : Service() {
             "android.app.ForegroundServiceStartNotAllowedException"
         private const val POLL_MS = 60_000L
         private const val COOLDOWN_MS = 20_000L
+        private const val MANUAL_COOLDOWN_MS = 5_000L
 
         private const val TEXT_STARTING = "Auto-login is starting"
         private const val TEXT_RUNNING = "Auto-login is on"
