@@ -179,7 +179,7 @@ class AutoLoginService : Service() {
                         this@AutoLoginService, network, user, pass
                     )
                 }
-                Log.i(TAG, "login ok=${result.ok}: ${result.message}")
+                Log.i(TAG, "login completed ok=${result.ok}")
                 when {
                     result.ok -> {
                         transientRetries = 0
