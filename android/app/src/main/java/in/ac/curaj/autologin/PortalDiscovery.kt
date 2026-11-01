@@ -13,7 +13,6 @@ import java.util.concurrent.ExecutorCompletionService
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
-import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Portal discovery and the authoritative online check.
@@ -242,7 +241,8 @@ internal object PortalDiscovery {
         private val span: ISpan?,
         private val check: () -> Int
     ) : Callable<Int> {
-        private val spanDone = AtomicBoolean(false)
+        private val spanLock = Any()
+        private var spanDone = false
 
         override fun call(): Int {
             var status: Int? = null
@@ -255,12 +255,19 @@ internal object PortalDiscovery {
                 failure = t
                 throw t
             } finally {
-                if (spanDone.compareAndSet(false, true)) {
-                    val error = failure
-                    if (error != null) {
-                        SentryTracing.failHttpSpan(span, error)
-                    } else {
-                        SentryTracing.finishHttpSpan(span, status)
+                // Hold the lock while finishing. If cancelSpan already claimed
+                // the span, it has finished it; if this thread claimed it, the
+                // caller's cancelSpan blocks until the finish completes. That
+                // keeps every child span closed before the parent transaction.
+                val error = failure
+                synchronized(spanLock) {
+                    if (!spanDone) {
+                        spanDone = true
+                        if (error != null) {
+                            SentryTracing.failHttpSpan(span, error)
+                        } else {
+                            SentryTracing.finishHttpSpan(span, status)
+                        }
                     }
                 }
             }
@@ -268,9 +275,12 @@ internal object PortalDiscovery {
 
         /** Finish a span whose check lost the race or was never started. */
         fun cancelSpan() {
-            if (spanDone.compareAndSet(false, true)) {
-                span?.status = SpanStatus.CANCELLED
-                span?.finish()
+            synchronized(spanLock) {
+                if (!spanDone) {
+                    spanDone = true
+                    span?.status = SpanStatus.CANCELLED
+                    span?.finish()
+                }
             }
         }
     }
