@@ -117,10 +117,13 @@ restore the session without the user opening a browser**.
 | `MainActivity` | Material 3 dashboard, auto-saving credentials, one-shot connect/logout, live Wi-Fi and latency/throughput metrics, session sheet, battery/Wi-Fi settings menu | protocol details, background scheduling |
 | `AppState` | in-process live state shared by the activity and service | persistence |
 | `NetworkMonitor` | one fresh Wi-Fi `Network` for request binding, plus optional SSID/IP/signal/link details | portal logic |
-| `NetworkMetrics` | five HTTP probes for latency/loss, `TrafficStats` deltas for app throughput | ICMP (not available to normal apps) |
-| `SessionsSheet` | load/close/verify sessions with per-row spinners and 15 s auto-refresh | choosing sessions for the user |
+| `NetworkMetrics` | three HTTP probes for latency/loss, `TrafficStats` deltas for app throughput | ICMP (not available to normal apps) |
+| `SessionsSheet` | load/close/verify sessions with per-row spinners and 30 s auto-refresh | choosing sessions for the user |
 | `AutoLoginService` | stay alive, receive Wi-Fi callbacks, poll, serialize attempts, backoff, notifications | parsing the portal HTML |
-| `PortalClient` | probe, portal discovery, host pinning, login/logout HTTP, success verification | Android lifecycle, UI, notifications |
+| `PortalClient` | login/logout orchestration, duplicate-auth handling, success verification | transport details, Android lifecycle, UI, notifications |
+| `PortalHttp` | bounded HTTP transport, URL redaction, per-request spans | portal policy |
+| `PortalDiscovery` | probe, portal discovery, host pinning, online check | login state machine |
+| `PortalSessions` | session list/close verification | choosing sessions for the user |
 | `Prefs` | encrypted credentials, enabled flag, last result/time | network or portal logic |
 | `BootReceiver` | restart the service after boot/app update when enabled and configured | retrying failed logins |
 | `CurajApp` | initialize Sentry and scrub credentials/PII before events leave the device | portal or UI logic |
@@ -914,7 +917,10 @@ The detailed device evidence is in [ANDROID-TEST.md](ANDROID-TEST.md).
 android/app/src/main/java/in/ac/curaj/autologin/
   MainActivity.kt        credentials, test, logout, status, settings shortcuts
   AutoLoginService.kt    FGS, network callback, poll, backoff, notifications
-  PortalClient.kt        probe, discovery, host pinning, login/logout
+  PortalClient.kt        login/logout facade and duplicate-auth handling
+  PortalHttp.kt          bounded HTTP transport and URL redaction
+  PortalDiscovery.kt     probe, discovery, host pinning, online check
+  PortalSessions.kt      session list/close
   Prefs.kt               Keystore-backed encrypted preferences
   BootReceiver.kt        boot / package-replaced restart
   CurajApp.kt            Sentry initialization and event scrubbing
@@ -951,7 +957,7 @@ Approximate evolution from the build/test notes:
 
 ## 13. Limits and things to re-check if it breaks
 
-* **Portal IP change** — update `PORTAL_HOSTS` in `PortalClient.kt` and the
+* **Portal IP change** — update `PORTAL_HOSTS` in `PortalDiscovery.kt` and the
   network-security config. Do not replace the pin with “any `/userportal`
   URL”.
 * **Portal HTML change** — `findPortal` handles `Location`, meta refresh, JS

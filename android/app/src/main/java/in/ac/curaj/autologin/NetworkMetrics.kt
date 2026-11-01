@@ -19,7 +19,7 @@ data class NetworkMetrics(
 
 /**
  * Android apps cannot send raw ICMP, so latency and loss are measured with
- * five small HTTP requests to the campus portal. All requests are bound to
+ * three small HTTP requests to the campus portal. All requests are bound to
  * the supplied Wi-Fi network, never to mobile data.
  */
 class NetworkMetricsSampler {
@@ -82,7 +82,7 @@ class NetworkMetricsSampler {
         null
     }
 
-    private companion object {
+    companion object {
         const val PROBES = 3
     }
 }

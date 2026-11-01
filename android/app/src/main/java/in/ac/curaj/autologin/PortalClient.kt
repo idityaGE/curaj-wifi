@@ -110,9 +110,10 @@ object PortalClient {
                     kind = Result.Kind.BIND_ERROR
                 )
             } else {
+                Log.w(TAG, "login failed: ${e.javaClass.simpleName}")
                 Result(
                     false,
-                    "login error: ${e.message ?: e.javaClass.simpleName}"
+                    "login error"
                 )
             }
         }
@@ -143,8 +144,8 @@ object PortalClient {
 
         val first = try {
             PortalDiscovery.probe(network)
-        } catch (e: Exception) {
-            return Result(false, "probe failed: ${e.message}")
+        } catch (_: Exception) {
+            return Result(false, "probe failed")
         }
 
         val portal = PortalDiscovery.findPortal(first, network)
@@ -164,8 +165,8 @@ object PortalClient {
         // 1. portal session (JSESSIONID carries ip/mac/sc context)
         val splash = try {
             PortalHttp.request(network, portal, step = "splash")
-        } catch (e: Exception) {
-            return Result(false, "portal unreachable: ${e.message}")
+        } catch (_: Exception) {
+            return Result(false, "portal unreachable")
         }
 
         val cookie = PortalDiscovery.cookieFrom(splash)
@@ -208,8 +209,8 @@ object PortalClient {
                 headers = common + ("Content-Type" to "application/x-www-form-urlencoded"),
                 step = "newlogin"
             )
-        } catch (e: Exception) {
-            return Result(false, "login POST failed: ${e.message}")
+        } catch (_: Exception) {
+            return Result(false, "login request failed")
         }
 
         val json = try {
@@ -334,8 +335,8 @@ object PortalClient {
 
         val splash = try {
             PortalHttp.request(network, portal, step = "splash")
-        } catch (e: Exception) {
-            return Result(false, "portal unreachable: ${e.message}")
+        } catch (_: Exception) {
+            return Result(false, "portal unreachable")
         }
         val cookie = PortalDiscovery.cookieFrom(splash)
             ?: return Result(false, "portal issued no JSESSIONID")
@@ -374,7 +375,7 @@ object PortalClient {
         }
         Log.i(
             TAG,
-            "logout.do -> ${logoutResult.getOrNull()?.code ?: logoutResult.exceptionOrNull()?.message}"
+            "logout.do -> ${logoutResult.getOrNull()?.code ?: logoutResult.exceptionOrNull()?.javaClass?.simpleName}"
         )
 
         runCatching {

@@ -9,15 +9,24 @@ import java.io.IOException
 import java.security.GeneralSecurityException
 import java.security.KeyStore
 
-enum class LastState {
-    ONLINE,
-    ALREADY_ONLINE,
-    SESSION_LIMIT,
-    FAILED,
-    PAUSED,
-    LOGGED_OUT,
-    SESSION_CLOSED,
-    UNKNOWN
+/**
+ * [key] is the stable on-disk representation. Enum constant names are not
+ * stable across R8 builds, so the persisted value must not use [name].
+ */
+enum class LastState(val key: String) {
+    ONLINE("online"),
+    ALREADY_ONLINE("already_online"),
+    SESSION_LIMIT("session_limit"),
+    FAILED("failed"),
+    PAUSED("paused"),
+    LOGGED_OUT("logged_out"),
+    SESSION_CLOSED("session_closed"),
+    UNKNOWN("unknown");
+
+    companion object {
+        fun fromKey(key: String?): LastState =
+            values().firstOrNull { it.key == key } ?: UNKNOWN
+    }
 }
 
 /**
@@ -46,22 +55,20 @@ object Prefs {
     @Volatile
     private var resetNotice = false
 
+    @Synchronized
     private fun sp(ctx: Context): SharedPreferences {
         cached?.let { return it }
-        synchronized(this) {
-            cached?.let { return it }
-            val app = ctx.applicationContext
-            val key = MasterKey.Builder(app)
-                .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-                .build()
-            return EncryptedSharedPreferences.create(
-                app,
-                FILE,
-                key,
-                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-            ).also { cached = it }
-        }
+        val app = ctx.applicationContext
+        val key = MasterKey.Builder(app)
+            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+            .build()
+        return EncryptedSharedPreferences.create(
+            app,
+            FILE,
+            key,
+            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+        ).also { cached = it }
     }
 
     private fun isCryptoFailure(t: Throwable): Boolean {
@@ -158,14 +165,12 @@ object Prefs {
 
     fun lastState(ctx: Context): LastState =
         read(ctx, LastState.UNKNOWN) { prefs ->
-            runCatching {
-                LastState.valueOf(prefs.getString(KEY_LAST_STATE, "").orEmpty())
-            }.getOrDefault(LastState.UNKNOWN)
+            LastState.fromKey(prefs.getString(KEY_LAST_STATE, null))
         }
 
     fun record(ctx: Context, state: LastState, result: String) =
         write(ctx) { editor ->
-            editor.putString(KEY_LAST_STATE, state.name)
+            editor.putString(KEY_LAST_STATE, state.key)
                 .putString(KEY_LAST_RESULT, result)
                 .putLong(KEY_LAST_TIME, System.currentTimeMillis())
         }

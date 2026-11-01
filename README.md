@@ -266,7 +266,10 @@ app/src/main/java/in/ac/curaj/autologin/
   NetworkMetrics.kt    HTTP latency/loss + app throughput sampler
   SessionsSheet.kt     bottom sheet: list, close, verify, auto-refresh
   Prefs.kt             EncryptedSharedPreferences (Keystore-backed)
-  PortalClient.kt      probe, discovery, host pinning, login/logout, sessions
+  PortalClient.kt      login/logout facade and duplicate-auth handling
+  PortalHttp.kt        bounded HTTP transport and URL redaction
+  PortalDiscovery.kt   probe, portal discovery, host pinning, online check
+  PortalSessions.kt    session list/close
   AutoLoginService.kt  foreground service + NetworkCallback + 60 s poll
   BootReceiver.kt      restarts after boot / app update
 ```
@@ -326,8 +329,8 @@ How it behaves:
   Wi-Fi cannot harvest the password with a fake `/userportal` page.
 * The main screen shows live status, the Wi-Fi SSID (when optional Wi-Fi
   details are allowed), IP, band, signal percentage/RSSI, HTTP latency and
-  packet loss from five probes, app download/upload throughput, and the
-  negotiated link speed. It auto-refreshes every five seconds.
+  packet loss from three probes, app download/upload throughput, and the
+  negotiated link speed. It auto-refreshes every fifteen seconds.
 * Account fields save automatically after a short debounce. **Auto connect**
   starts on for fresh installs and starts the foreground service as soon as
   both credentials are valid; the switch can still pause it. There is no Save
@@ -384,7 +387,7 @@ How it behaves:
   and has been tested on a OnePlus CPH2793 (Android 16). The debug APK is not
   Play-Store signed.
 * If the university changes the portal vendor or the redirect shape, update
-  `PORTAL_URL_RE` in `linux/curaj-login` and the regexes in `PortalClient.kt`.
+  `PORTAL_URL_RE` in `linux/curaj-login` and the regexes in `PortalDiscovery.kt`.
 * The account is limited to **two simultaneous internet sessions**. Both
   clients list and close one chosen session; they never auto-kick. Session
   lifetime is still not measured; the service handles expiry by re-running the

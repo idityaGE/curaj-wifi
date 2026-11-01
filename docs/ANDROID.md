@@ -282,7 +282,7 @@ to the attacker. The check makes the app fail closed with
 
 If the university moves the portal, update **both**:
 
-* `PORTAL_HOSTS` in `PortalClient.kt`
+* `PORTAL_HOSTS` in `PortalDiscovery.kt`
 * the `<domain>` entries in
   `app/src/main/res/xml/network_security_config.xml`
 
@@ -412,10 +412,13 @@ android/app/src/main/java/in/ac/curaj/autologin/
   MainActivity.kt      Material 3 dashboard, auto-save, metrics, menu, logout
   AppState.kt          live state shared with the service
   NetworkMonitor.kt    fresh Wi-Fi Network, SSID/IP/signal/link details
-  NetworkMetrics.kt    five HTTP probes + TrafficStats throughput deltas
+  NetworkMetrics.kt    three HTTP probes + TrafficStats throughput deltas
   SessionsSheet.kt     session bottom sheet with spinner/auto-refresh
   AutoLoginService.kt  FGS, callback, poll, backoff, notification actions
-  PortalClient.kt      HTTP flow, host pinning, duplicate-auth handling, login/logout
+  PortalClient.kt      login/logout facade and duplicate-auth handling
+  PortalHttp.kt        bounded HTTP transport and URL redaction
+  PortalDiscovery.kt   probe, discovery, host pinning, online check
+  PortalSessions.kt    session list/close
   Prefs.kt             Keystore-backed credentials + last result
   BootReceiver.kt      BOOT_COMPLETED / MY_PACKAGE_REPLACED
 

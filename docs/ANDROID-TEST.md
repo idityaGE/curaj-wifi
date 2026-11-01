@@ -406,5 +406,5 @@ were prepared. Do them with the cable or wireless debugging connected:
   cleartext, which is a property of the portal, not the app. Use a password
   that is not reused elsewhere.
 * The app pins the portal to `122.252.242.93`. If the university changes the
-  portal IP, update `PORTAL_HOSTS` in `PortalClient.kt` and the cleartext
+  portal IP, update `PORTAL_HOSTS` in `PortalDiscovery.kt` and the cleartext
   allowlist.

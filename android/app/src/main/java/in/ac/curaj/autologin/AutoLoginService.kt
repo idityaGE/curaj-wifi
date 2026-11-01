@@ -211,7 +211,7 @@ class AutoLoginService : Service() {
                     ) {
                         SentryTracing.tag(
                             "portal.trigger",
-                            if (force) "manual" else "auto"
+                            if (fromUser) "manual" else "auto"
                         )
                         PortalClient.login(
                             this@AutoLoginService,
@@ -317,7 +317,7 @@ class AutoLoginService : Service() {
                 }
                 transientRetries = 0
                 noteFailure()
-                val text = "Sign-in error: ${e.message ?: e.javaClass.simpleName}"
+                val text = "Sign-in error"
                 Prefs.record(this@AutoLoginService, LastState.FAILED, text)
                 AppState.set(AppState.Connection.FAILED, text)
                 update(text)
@@ -504,6 +504,7 @@ class AutoLoginService : Service() {
         return builder.build()
     }
 
+    @Synchronized
     private fun postLimitNotification() {
         if (limitNotified) return
         limitNotified = true
@@ -534,6 +535,7 @@ class AutoLoginService : Service() {
             .notify(NOTIF_LIMIT_ID, notification)
     }
 
+    @Synchronized
     private fun cancelLimitNotification() {
         limitNotified = false
         getSystemService(NotificationManager::class.java).cancel(NOTIF_LIMIT_ID)
@@ -560,20 +562,24 @@ class AutoLoginService : Service() {
             if (text == lastNotificationText && limit == lastLimit) return
             lastNotificationText = text
             lastLimit = limit
-        }
-        getSystemService(NotificationManager::class.java)
-            .notify(NOTIF_ID, notification(text, limit))
-        if (limit) {
-            postLimitNotification()
-        } else {
-            cancelLimitNotification()
+            // Keep the whole update under the lock so concurrent callers
+            // cannot post states out of order.
+            getSystemService(NotificationManager::class.java)
+                .notify(NOTIF_ID, notification(text, limit))
+            if (limit) {
+                postLimitNotification()
+            } else {
+                cancelLimitNotification()
+            }
         }
     }
 
     override fun onDestroy() {
         retryJob?.cancel()
         retryJob = null
-        NetworkMonitor.stop(this)
+        // onCreate() returns before NetworkMonitor.start() when the OS denies
+        // the foreground start; do not decrement another component's client.
+        if (!foregroundDenied) NetworkMonitor.stop(this)
         scope.cancel()
         // A service that ran normally is being stopped on purpose (pause, logout,
         // auto-connect off), so the "paused by Android" hint is stale.

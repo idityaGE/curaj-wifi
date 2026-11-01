@@ -84,8 +84,8 @@ internal object PortalSessions {
                 ),
                 step = "session_close"
             )
-        } catch (e: Exception) {
-            return PortalClient.Result(false, "logout request failed: ${e.message}")
+        } catch (_: Exception) {
+            return PortalClient.Result(false, "logout request failed")
         }
 
         // A 302 to http://1.254.254.254?N=... is not proof: an invalid or
@@ -135,10 +135,10 @@ internal object PortalSessions {
     ): SelfCareSnapshot {
         val cookie = try {
             selfCareCookie(network, user, pass)
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             return SelfCareSnapshot(
                 false, null, emptyList(),
-                "self-care login failed: ${e.message}"
+                "self-care login failed"
             )
         } ?: return SelfCareSnapshot(
             false, null, emptyList(), "self-care login issued no JSESSIONID"
@@ -147,25 +147,25 @@ internal object PortalSessions {
         var current = cookie
         var page = try {
             fetchSessionsPage(network, current)
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             return SelfCareSnapshot(
-                false, null, emptyList(), "session list failed: ${e.message}"
+                false, null, emptyList(), "session list failed"
             )
         }
 
         if (page.body.contains("Session has been expired", ignoreCase = true)) {
             current = try {
                 selfCareCookie(network, user, pass)
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 null
             } ?: return SelfCareSnapshot(
                 false, null, emptyList(), "self-care session expired"
             )
             page = try {
                 fetchSessionsPage(network, current)
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 return SelfCareSnapshot(
-                    false, null, emptyList(), "session list failed: ${e.message}"
+                    false, null, emptyList(), "session list failed"
                 )
             }
         }

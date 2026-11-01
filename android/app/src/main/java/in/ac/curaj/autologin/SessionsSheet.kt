@@ -158,7 +158,7 @@ class SessionsSheet : BottomSheetDialogFragment() {
                 }.getOrElse {
                     PortalClient.SessionsResult(
                         false,
-                        message = it.message ?: it.javaClass.simpleName
+                        message = "unexpected error"
                     )
                 }
             }
@@ -257,7 +257,7 @@ class SessionsSheet : BottomSheetDialogFragment() {
                 }.onFailure {
                     SentryTracing.captureHandled("sessions.close", "manual", it)
                 }.getOrElse {
-                    PortalClient.Result(false, it.message ?: it.javaClass.simpleName)
+                    PortalClient.Result(false, "unexpected error")
                 }
             }
             if (!isAdded) return@launch

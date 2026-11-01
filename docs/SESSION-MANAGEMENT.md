@@ -199,7 +199,7 @@ Wi-Fi network, then opens a bottom sheet that:
 6. verifies the session is gone, refreshes the list automatically, and, if
    auto connect is enabled, starts a normal login attempt again.
 
-The sheet also refreshes itself every 15 seconds while it is open. If the list
+The sheet also refreshes itself every 30 seconds while it is open. If the list
 fails to load, it shows a **Retry** button instead of a blank panel.
 
 When the background service sees the two-session limit it posts a **separate**

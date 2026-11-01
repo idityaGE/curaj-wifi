@@ -303,7 +303,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun renderMetrics() {
         metricLatency.text = metrics.latencyMs?.let { "$it ms" } ?: "—"
-        metricLoss.text = metrics.lossPercent?.let { "$it%  (3 probes)" } ?: "—"
+        metricLoss.text = metrics.lossPercent?.let { "$it%  (${NetworkMetricsSampler.PROBES} probes)" } ?: "—"
         metricDownload.text = formatBps(metrics.downloadBps)
         metricUpload.text = formatBps(metrics.uploadBps)
         networkUpdated.text = if (metrics.updatedAt == 0L) {
@@ -590,7 +590,7 @@ class MainActivity : AppCompatActivity() {
                 }.onFailure {
                     SentryTracing.captureHandled("login", "manual", it)
                 }.getOrElse {
-                    PortalClient.Result(false, it.message ?: it.javaClass.simpleName)
+                    PortalClient.Result(false, "unexpected error")
                 }
             }
             val alreadyOnline =
@@ -691,7 +691,7 @@ class MainActivity : AppCompatActivity() {
                 }.onFailure {
                     SentryTracing.captureHandled("logout", "manual", it)
                 }.getOrElse {
-                    PortalClient.Result(false, it.message ?: it.javaClass.simpleName)
+                    PortalClient.Result(false, "unexpected error")
                 }
             }
             val text = if (result.ok) "Logged out" else "Logout failed: ${result.message}"
