@@ -47,8 +47,8 @@ android {
         applicationId = "in.ac.curaj.autologin"
         minSdk = 26
         targetSdk = 35
-        versionCode = 11
-        versionName = "1.6.3-alpha2"
+        versionCode = 12
+        versionName = "1.6.3-alpha3"
         buildConfigField(
             "String",
             "SENTRY_DSN",
