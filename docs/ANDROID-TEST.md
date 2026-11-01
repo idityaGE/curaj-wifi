@@ -100,9 +100,9 @@ adb shell 'curl --interface wlan0 http://142.251.150.120/generate_204'
 
 ## 3. The fix
 
-`PortalDiscovery` probes four Google `generate_204` IPs in order for splash
-discovery. The authoritative online check races the same four IPs in parallel
-and takes the first `204`:
+`PortalDiscovery` races four Google `generate_204` IPs in parallel for splash
+discovery. The authoritative online check races the same four IPs and takes the
+first `204`:
 
 ```kotlin
 private val CHECK_URLS = listOf(
@@ -190,9 +190,10 @@ client treated it as a hard failure and waited a full backoff interval.
 
 Version 1.3 detects the phrase and does **not** POST a second `newlogin.do`.
 It polls the probe for up to six seconds and reports success as soon as the
-gate opens. If the portal is still working, the service retries after three
-seconds (bounded to 10 transient retries) without posting a false failure
-notification.
+gate opens. Current builds (1.6.3-alpha4 and later) poll the authoritative
+online check with an 8-second deadline instead. If the portal is still working,
+the service retries after three seconds (bounded to 10 transient retries)
+without posting a false failure notification.
 
 On the live network the old failure no longer appears, and the connection is
 reported as soon as the portal finishes.
@@ -311,6 +312,18 @@ were prepared. Do them with the cable or wireless debugging connected:
 > **Auto-login paused** notification instead of a crash loop, and that the
 > child spans below appear in `portal.login`, `portal.logout`,
 > `portal.sessions.list`, and `portal.sessions.close`.
+>
+> **1.6.3-alpha4 addendum:** these checks still apply (release string
+> `in.ac.curaj.autologin@1.6.3-alpha4+13`). alpha4 races portal discovery as
+> well as the online check, shortens probe timeouts, replaces fixed
+> verification sleeps with bounded polls, and adds `portal.online_check` /
+> `portal.probe` parent spans. On a slow or partly blackholed network, confirm:
+> `portal.login` finishes in under 3 s in the common case; the trace shows
+> parallel children under the two parent spans, not sequential 6–7 s
+> `online_check` spans; and `CURAJ-WIFI-2` no longer appears after a denied
+> background start. Also confirm a reboot still starts the service when
+> **Auto connect** is on, and that it does not post a lingering notification
+> when the switch is off.
 
 1. **Fresh install default**
    - Uninstall the app, install 1.6, and open it.
@@ -339,14 +352,15 @@ were prepared. Do them with the cable or wireless debugging connected:
 6. **Portal tracing and child spans**
    - Trigger a login and a logout while Sentry tracing is enabled.
    - Confirm `portal.login` and `portal.logout` transactions appear.
-   - Open `portal.login` and confirm it has `http.client` child spans for the
-     online check, probe, splash, `login.do`, `newlogin.do`, and verification.
+   - Open `portal.login` and confirm it has `portal.online_check` and
+     `portal.probe` parent spans, each with up to four parallel `http.client`
+     children, plus splash, `login.do`, `newlogin.do`, and verification spans.
      Retried endpoints appear as extra spans with the same `portal.step`.
    - Confirm `portal.logout` shows discovery, splash, newlogin, logout, NAS,
      and `verify_logout` spans.
-   - Session sheet actions should produce `portal.sessions.list` (probe,
-     context, selfcare_newlogin, sessions_page) and `portal.sessions.close`
-     (session_close, verify_sessions_page).
+   - Session sheet actions should produce `portal.sessions.list` (probe
+     parent, context, selfcare_newlogin, sessions_page) and
+     `portal.sessions.close` (session_close, verify_sessions_page).
    - Trigger a wrong-password login and confirm the transaction has
      `portal.result=failed` and a non-OK status. Confirm no span or transaction
      data contains credentials, query strings, cookies, or request bodies.

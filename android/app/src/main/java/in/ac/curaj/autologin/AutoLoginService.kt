@@ -132,6 +132,7 @@ class AutoLoginService : Service() {
 
         if (!Prefs.enabled(this)) {
             AppState.set(AppState.Connection.PAUSED, "Auto connect is off")
+            stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return START_NOT_STICKY
         }
@@ -421,12 +422,24 @@ class AutoLoginService : Service() {
 
     /**
      * Android 12+ throws ForegroundServiceStartNotAllowedException here. Compare
-     * the class name instead of referencing the API-31 class directly, so the
-     * guard also loads on Android 8-11 where that class does not exist.
+     * class names instead of referencing the API-31 class directly, so the
+     * guard also loads on Android 8-11 where that class does not exist. Walk
+     * the cause chain because some OEM builds wrap the platform exception.
      */
-    private fun isForegroundStartDenied(e: RuntimeException): Boolean =
-        Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
-            e.javaClass.name == FOREGROUND_START_NOT_ALLOWED
+    private fun isForegroundStartDenied(e: RuntimeException): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return false
+        var current: Throwable? = e
+        while (current != null) {
+            val name = current.javaClass.name
+            if (name == FOREGROUND_START_NOT_ALLOWED ||
+                name == SERVICE_START_NOT_ALLOWED
+            ) {
+                return true
+            }
+            current = current.cause
+        }
+        return false
+    }
 
     /**
      * A plain notification is not a foreground one, so it is always allowed.
@@ -468,25 +481,23 @@ class AutoLoginService : Service() {
     }
 
     private fun createChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val nm = getSystemService(NotificationManager::class.java)
-            val ch = NotificationChannel(
-                CHANNEL, "Campus auto-login", NotificationManager.IMPORTANCE_LOW
-            )
-            ch.setShowBadge(false)
-            ch.setSound(null, null)
-            nm.createNotificationChannel(ch)
+        val nm = getSystemService(NotificationManager::class.java)
+        val ch = NotificationChannel(
+            CHANNEL, "Campus auto-login", NotificationManager.IMPORTANCE_LOW
+        )
+        ch.setShowBadge(false)
+        ch.setSound(null, null)
+        nm.createNotificationChannel(ch)
 
-            // The limit notification is actionable, so it is allowed to make
-            // a sound once. It is separate from the silent foreground state.
-            val limit = NotificationChannel(
-                CHANNEL_LIMIT, "Session limit",
-                NotificationManager.IMPORTANCE_DEFAULT
-            )
-            limit.setShowBadge(true)
-            limit.enableVibration(true)
-            nm.createNotificationChannel(limit)
-        }
+        // The limit notification is actionable, so it is allowed to make
+        // a sound once. It is separate from the silent foreground state.
+        val limit = NotificationChannel(
+            CHANNEL_LIMIT, "Session limit",
+            NotificationManager.IMPORTANCE_DEFAULT
+        )
+        limit.setShowBadge(true)
+        limit.enableVibration(true)
+        nm.createNotificationChannel(limit)
     }
 
     private fun notification(text: String, limit: Boolean = false): Notification {
@@ -631,6 +642,8 @@ class AutoLoginService : Service() {
         private const val NOTIF_RESUME_ID = 43
         private const val FOREGROUND_START_NOT_ALLOWED =
             "android.app.ForegroundServiceStartNotAllowedException"
+        private const val SERVICE_START_NOT_ALLOWED =
+            "android.app.ServiceStartNotAllowedException"
         private const val POLL_MS = 60_000L
         private const val COOLDOWN_MS = 20_000L
         private const val MANUAL_COOLDOWN_MS = 5_000L

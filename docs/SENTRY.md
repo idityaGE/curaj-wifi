@@ -18,9 +18,10 @@ transactions (with per-request child spans) to Sentry project
   the method, the sanitized path, the response status, and a `portal.step`
   label (`online_check`, `probe`, `splash`, `login_page`, `newlogin`,
   `logout`, `session_close`, `sessions_page`, and so on). Retries and endpoint
-  fallbacks appear as separate spans. The online check races all four fixed
-  IPs, so it can produce up to four parallel `online_check` spans; losing
-  spans are finished as cancelled.
+  fallbacks appear as separate spans. The online check and splash discovery
+  each race all four fixed IPs in parallel, so they can produce up to four
+  parallel children; losing spans are finished as cancelled. The race itself
+  is grouped under a `portal.online_check` or `portal.probe` parent span.
 - A `portal.result` tag on every portal transaction: `ok`, `failed`,
   `session_limit`, `bind_error`, or `exception`. Expected failures use a
   non-OK status instead of being reported as `ok`. A successful session list
@@ -34,17 +35,23 @@ Expected portal trace shapes:
 
 ```text
 portal.login
-├── http.client GET /generate_204            portal.step=online_check (up to 4, parallel)
-├── http.client GET /generate_204            portal.step=probe
+├── portal.online_check                     portal.step=online_check
+│   ├── http.client GET /generate_204       (up to 4, parallel)
+│   └── ...
+├── portal.probe                            portal.step=probe
+│   ├── http.client GET /generate_204       (up to 4, parallel)
+│   └── ...
 ├── http.client GET /userportal/             portal.step=splash
 ├── http.client POST /userportal/login.do    portal.step=login_page
 ├── http.client POST /userportal/newlogin.do portal.step=newlogin
-└── http.client GET /generate_204            portal.step=verify_online (repeats)
+└── portal.online_check                       portal.step=verify_online (polls)
+    ├── http.client GET /generate_204         (up to 4, parallel)
+    └── ...
 ```
 
 ```text
 portal.sessions.list
-├── http.client GET /generate_204                 portal.step=probe
+├── portal.probe                                  portal.step=probe (up to 4, parallel)
 ├── http.client GET /userportal/                  portal.step=context
 ├── http.client POST /userportal/newlogin.do      portal.step=selfcare_newlogin
 └── http.client GET /userportal/currentSessions.do portal.step=sessions_page
@@ -56,6 +63,18 @@ portal.sessions.list
 
 Session Replay, screenshots, view hierarchies, profiling, and default PII are
 disabled.
+
+## Latency alert
+
+Create an alert on the `curaj-wifi` project for:
+
+- metric: `p95(span.duration)` filtered to `transaction:portal.login`
+- threshold: greater than 3000 ms over a 10-minute window
+- action: notify the project owner
+
+The `portal.online_check` and `portal.probe` parent spans make it obvious
+which phase regressed; the `http.client` children show whether one endpoint
+or the whole race is slow.
 
 ## Credential scrubbing
 

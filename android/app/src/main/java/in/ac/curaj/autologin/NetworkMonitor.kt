@@ -100,6 +100,7 @@ object NetworkMonitor {
         manager = null
         appContext = null
         _wifi.value = null
+        PortalDiscovery.invalidateOnlineCache()
     }
 
     /** Fresh network to use for portal requests, or null while Wi-Fi is absent. */
@@ -126,17 +127,45 @@ object NetworkMonitor {
             caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
     }
 
+    /**
+     * What the OS thinks about internet on [network], or null when it has no
+     * opinion yet. A captive-portal hint is treated as a negative; the HTTP
+     * race still confirms before a login so a stale hint cannot block it.
+     */
+    @Synchronized
+    fun onlineHint(network: Network): Boolean? {
+        val cm = manager ?: return null
+        val caps = cm.getNetworkCapabilities(network) ?: return null
+        if (caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_CAPTIVE_PORTAL)) {
+            return false
+        }
+        if (caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)) {
+            return true
+        }
+        return null
+    }
+
     @Synchronized
     private fun accept(network: Network) {
         if (manager == null) return
         if (!isWifi(network)) return
-        _wifi.value = Wifi(network, readDetails(network))
+        val previous = _wifi.value
+        val details = readDetails(network)
+        if (previous?.network != network ||
+            previous.details?.validated != details?.validated
+        ) {
+            PortalDiscovery.invalidateOnlineCache()
+        }
+        _wifi.value = Wifi(network, details)
     }
 
     @Synchronized
     private fun lost(network: Network) {
         if (manager == null) return
-        if (_wifi.value?.network == network) _wifi.value = null
+        if (_wifi.value?.network == network) {
+            _wifi.value = null
+            PortalDiscovery.invalidateOnlineCache()
+        }
     }
 
     // WifiInfo.connectionInfo and the two-argument calculateSignalLevel are

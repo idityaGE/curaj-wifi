@@ -228,7 +228,7 @@ the exact local JDK 17 + command-line SDK setup.
    `generate_204` IPs in parallel (`http://142.251.150.120/generate_204` and
    the three fallbacks).
    * any `204` → already online; done.
-   * otherwise, probe the IPs in order to discover the portal, then parse the
+   * otherwise, race the IPs in parallel to discover the portal, then parse the
      portal URL from `Location`, a meta refresh, a JS redirect, or a
      `/userportal/?...` URL in the body.
    IPs are used instead of the hostname because the captive Wi-Fi returns
@@ -238,16 +238,17 @@ the exact local JDK 17 + command-line SDK setup.
 6. `POST newlogin.do` with
    `username`, `password`, `phone=0`, `type=2`, `jsonresponse=1`.
 7. On `redirect_to_nas` or “Session already running”: call `logout.do` with the
-   cookie, wait 1.5 s, retry once.
+   cookie, wait 500 ms, poll the online check, retry once.
 8. On “Maximum session allowed reached”: report the limit, post **Manage
    sessions**, and wait for the user to close one. Do not kick a session
    automatically.
 9. On “Authentication already in progress for IP …”: do **not** send another
-   `newlogin.do`. Poll the probe for up to 6 s; if it is still pending, return
-   a transient result and retry after 3 s. This avoids racing Android’s own
-   captive-portal login.
-10. Poll `generate_204` for up to 9 s; success means the NAS has opened the
-    gate, not merely that the portal said “success”.
+   `newlogin.do`. Poll the authoritative online check with an 8-second deadline;
+   if it is still pending, return a transient result and retry after 3 s. This
+   avoids racing Android’s own captive-portal login.
+10. Poll the authoritative online check with an 8-second deadline (300 ms
+    interval); success means the NAS has opened the gate, not merely that the
+    portal said “success”.
 
 ---
 

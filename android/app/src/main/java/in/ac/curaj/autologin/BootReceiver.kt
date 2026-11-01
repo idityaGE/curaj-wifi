@@ -14,7 +14,9 @@ class BootReceiver : BroadcastReceiver() {
         ) return
 
         // Decrypting credentials can touch the Keystore, so keep it off the
-        // main thread; goAsync() keeps the receiver alive until finish().
+        // main thread; goAsync() keeps the receiver alive until finish(). Only
+        // start when auto-connect is on and both credentials are present, so a
+        // reboot cannot leave a credential-less foreground service running.
         val app = ctx.applicationContext
         val pending = goAsync()
         val worker = Thread {
@@ -27,6 +29,8 @@ class BootReceiver : BroadcastReceiver() {
                         ContextCompat.startForegroundService(
                             app, Intent(app, AutoLoginService::class.java)
                         )
+                    }.onFailure {
+                        Log.w("BootReceiver", "could not start auto-login", it)
                     }
                 }
             } finally {

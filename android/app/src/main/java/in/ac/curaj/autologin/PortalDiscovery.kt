@@ -1,11 +1,14 @@
 package `in`.ac.curaj.autologin
 
 import android.net.Network
+import android.os.SystemClock
 import android.util.Log
 import io.sentry.ISpan
 import io.sentry.SpanStatus
 import java.io.IOException
+import java.net.HttpURLConnection
 import java.net.InetSocketAddress
+import java.net.Socket
 import java.net.URI
 import java.util.concurrent.Callable
 import java.util.concurrent.ExecutionException
@@ -30,17 +33,35 @@ import java.util.concurrent.Future
  * Squid proxies proxy-form requests normally and still intercepts them with the
  * splash page pre-auth, so only that form distinguishes online/blocked in both
  * states.
+ *
+ * Both the online check and portal discovery race all four probe IPs in
+ * parallel. A blackholed endpoint therefore costs one timeout, not four, which
+ * is what kept `portal.login` p95 above ten seconds on 1.6.3-alpha1.
  */
 internal object PortalDiscovery {
     private const val TAG = "PortalDiscovery"
     const val PORTAL_HOST = "122.252.242.93"
 
-    private const val PROBE_TIMEOUT_MS = 6000
+    /**
+     * A healthy campus Wi-Fi answers a generate_204 probe in well under a
+     * second. Keep the timeout short so a blackholed endpoint cannot dominate
+     * login latency; the probes race, so one slow IP is not fatal.
+     */
+    private const val PROBE_TIMEOUT_MS = 2_500
+    private const val PROBE_CONNECT_TIMEOUT_MS = 1_500
+    private const val PROBE_READ_TIMEOUT_MS = 2_500
+
+    /**
+     * Reuse a positive online result briefly. This absorbs duplicate triggers
+     * (network callback plus poll plus manual tap) without hiding a session
+     * that expired seconds later: the 60 s service poll always re-checks.
+     */
+    private const val ONLINE_CACHE_MS = 10_000L
 
     /** Matches "HTTP/1.x <code>" in the first line of a response head. */
     private val STATUS_LINE = Regex("""(?i)HTTP/\d(?:\.\d)?\s+(\d{3})""")
 
-    /** Google generate_204 endpoints by IP; tried in order, no DNS needed. */
+    /** Google generate_204 endpoints by IP; raced together, no DNS needed. */
     private val CHECK_IPS = listOf(
         "142.251.150.120",
         "142.250.183.36",
@@ -62,6 +83,20 @@ internal object PortalDiscovery {
     }
 
     /**
+     * Discovery has its own pool so a still-timing-out online-check loser
+     * cannot delay the probe race that immediately follows it.
+     */
+    private val probeExecutor: ExecutorService by lazy {
+        Executors.newFixedThreadPool(CHECK_URLS.size) { runnable ->
+            Thread(runnable, "portal-probe").apply { isDaemon = true }
+        }
+    }
+
+    private val cacheLock = Any()
+    private var cachedNetwork: Network? = null
+    private var cachedUntil = 0L
+
+    /**
      * Credentials are only ever posted to the real campus portal. Without
      * this, a hostile Wi-Fi could serve a fake "/userportal" page and harvest
      * the password. Update this set if the university moves the portal.
@@ -72,17 +107,63 @@ internal object PortalDiscovery {
     private val JS = Regex("""(?i)location(?:\.href)?\s*=\s*["']([^"']+)["']""")
     private val ANY = Regex("""https?://[^"'\s<>]+/userportal/\?[^"'\s<>]+""")
 
+    /**
+     * Probe all fixed IPs in parallel and return the first HTTP response.
+     *
+     * On a captive network the first answer is the portal splash; when the
+     * network is already online it is a 204 and [PortalClient] treats it as
+     * "already online". A blackholed IP simply never wins the race.
+     */
     fun probe(network: Network): PortalHttp.Http {
-        var last: Exception? = null
-        for (url in CHECK_URLS) {
-            try {
-                return PortalHttp.request(network, url, step = "probe")
-            } catch (e: Exception) {
-                last = e
-                Log.w(TAG, "probe failed: ${e.message}")
-            }
+        val parent = SentryTracing.startSpan("portal.probe", "portal probe", "probe")
+        val calls = CHECK_URLS.map { url ->
+            val span = SentryTracing.startHttpSpan("GET", url, "probe", parent)
+            val connection = ConnectionHandle()
+            ProbeCall(
+                span,
+                {
+                    PortalHttp.execute(
+                        network = network,
+                        url = url,
+                        connectTimeoutMs = PROBE_CONNECT_TIMEOUT_MS,
+                        readTimeoutMs = PROBE_READ_TIMEOUT_MS,
+                        onOpen = connection::attach
+                    )
+                },
+                connection::cancel
+            )
         }
-        throw last ?: IOException("no probe endpoint")
+        val completion = ExecutorCompletionService<PortalHttp.Http>(probeExecutor)
+        val futures = mutableListOf<Future<PortalHttp.Http>>()
+        var last: Exception? = null
+        var won = false
+        try {
+            calls.forEach { futures += completion.submit(it) }
+            repeat(calls.size) {
+                try {
+                    val response = completion.take().get()
+                    won = true
+                    return response
+                } catch (e: ExecutionException) {
+                    last = (e.cause ?: e) as? Exception
+                }
+            }
+            throw last ?: IOException("no probe endpoint")
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            throw IOException("probe interrupted", e)
+        } finally {
+            // Losers must not outlive the portal transaction that created
+            // them. cancel() disconnects the loser's HTTP connection, which
+            // frees its worker thread immediately instead of leaving it parked
+            // until the read timeout. Close children before the parent span so
+            // the trace tree is complete when it is serialized.
+            calls.forEach { it.cancel() }
+            futures.forEach { it.cancel(false) }
+            parent?.status = if (won) SpanStatus.OK else SpanStatus.INTERNAL_ERROR
+            if (!won) last?.let { parent?.throwable = it }
+            parent?.finish()
+        }
     }
 
     fun findPortal(
@@ -106,7 +187,13 @@ internal object PortalDiscovery {
             if (runCatching { URI(url).host }.getOrNull() == "1.254.254.254") {
                 try {
                     val deeper = findPortal(
-                        PortalHttp.request(network, url, step = "discovery"),
+                        PortalHttp.request(
+                            network,
+                            url,
+                            step = "discovery",
+                            connectTimeoutMs = PROBE_CONNECT_TIMEOUT_MS,
+                            readTimeoutMs = PROBE_READ_TIMEOUT_MS
+                        ),
                         network
                     )
                     if (deeper != null && !deeper.contains("1.254.254.254")) {
@@ -128,7 +215,13 @@ internal object PortalDiscovery {
         for (splash in listOf("http://1.254.254.254/login", "http://1.254.254.254/")) {
             try {
                 val found = findPortal(
-                    PortalHttp.request(network, splash, step = "discovery"),
+                    PortalHttp.request(
+                        network,
+                        splash,
+                        step = "discovery",
+                        connectTimeoutMs = PROBE_CONNECT_TIMEOUT_MS,
+                        readTimeoutMs = PROBE_READ_TIMEOUT_MS
+                    ),
                     network
                 )
                 if (found != null && found.contains("/userportal")) return found
@@ -174,6 +267,32 @@ internal object PortalDiscovery {
     internal data class OnlineResult(val online: Boolean, val responded: Boolean)
 
     /**
+     * Authoritative online check with a short positive cache and an OS hint.
+     *
+     * The OS already knows whether a network is validated or captive; when it
+     * has an opinion, use it instead of spending a probe timeout. The HTTP
+     * race remains the fallback and is still what logout verification uses,
+     * because logout needs an actual response.
+     */
+    fun isOnline(network: Network, step: String = "online_check"): Boolean {
+        if (cachedOnline(network)) return true
+
+        when (NetworkMonitor.onlineHint(network)) {
+            true -> {
+                rememberOnline(network)
+                return true
+            }
+            // A captive portal definitely needs a login, but still confirm
+            // with the HTTP race so a stale OS hint cannot block a login.
+            false, null -> Unit
+        }
+
+        val online = checkOnline(network, step).online
+        if (online) rememberOnline(network)
+        return online
+    }
+
+    /**
      * Authoritative online check: 204 from a Google generate_204 endpoint.
      *
      * Only the response head is read - the status line carries everything this
@@ -182,29 +301,34 @@ internal object PortalDiscovery {
      *
      * All four fixed IPs are raced instead of tried in order. A blackholed
      * endpoint therefore costs one socket timeout, not four, while the first
-     * 204 still returns immediately. Losers are left to time out in the
-     * background; their Sentry spans are finished as cancelled before this
-     * method returns so the parent transaction can close safely.
+     * 204 still returns immediately. Losers are cancelled (their sockets are
+     * closed) before this method returns so the parent transaction can close
+     * safely and the worker threads are free for the next verification poll.
      */
-    fun isOnline(network: Network, step: String = "online_check"): Boolean =
-        checkOnline(network, step).online
-
     internal fun checkOnline(
         network: Network,
         step: String = "online_check"
     ): OnlineResult {
+        val parent = SentryTracing.startSpan("portal.online_check", "online check", step)
         val checks = CHECK_IPS.map { host ->
             val span = SentryTracing.startHttpSpan(
                 "GET",
                 "http://connectivitycheck.gstatic.com/generate_204",
-                step
+                step,
+                parent
             )
             span?.setData("server.address", host)
-            OnlineCheck(span) { proxyFormStatus(network, host) }
+            val socket = SocketHandle()
+            OnlineCheck(
+                span,
+                { proxyFormStatus(network, host, socket) },
+                socket::cancel
+            )
         }
         val completion = ExecutorCompletionService<Int>(checkExecutor)
         val futures = mutableListOf<Future<Int>>()
         var responded = false
+        var online = false
         try {
             checks.forEach { futures += completion.submit(it) }
             repeat(checks.size) {
@@ -212,7 +336,10 @@ internal object PortalDiscovery {
                 try {
                     val status = future.get()
                     responded = true
-                    if (status == 204) return OnlineResult(true, true)
+                    if (status == 204) {
+                        online = true
+                        return OnlineResult(true, true)
+                    }
                 } catch (e: ExecutionException) {
                     val cause = e.cause ?: e
                     Log.w(TAG, "online check failed: ${cause.message}")
@@ -224,15 +351,45 @@ internal object PortalDiscovery {
             return OnlineResult(false, false)
         } finally {
             // The loser spans must not outlive the portal transaction that
-            // created them. cancel(false) stops queued checks from starting
-            // without interrupting sockets that are already in flight.
-            checks.forEach { it.cancelSpan() }
+            // created them. cancel() closes the loser's socket, which frees
+            // its worker thread immediately instead of leaving it parked
+            // until the probe timeout. Close children before the parent span
+            // so the trace tree is complete.
+            checks.forEach { it.cancel() }
             futures.forEach { it.cancel(false) }
+            parent?.setData("portal.online", online)
+            parent?.setData("portal.responded", responded)
+            parent?.status = SpanStatus.OK
+            parent?.finish()
         }
     }
 
-    private fun proxyFormStatus(network: Network, host: String): Int {
+    /** Drop the positive cache when the underlying network changes. */
+    fun invalidateOnlineCache() {
+        synchronized(cacheLock) {
+            cachedNetwork = null
+            cachedUntil = 0L
+        }
+    }
+
+    private fun cachedOnline(network: Network): Boolean = synchronized(cacheLock) {
+        network == cachedNetwork && SystemClock.elapsedRealtime() < cachedUntil
+    }
+
+    private fun rememberOnline(network: Network) {
+        synchronized(cacheLock) {
+            cachedNetwork = network
+            cachedUntil = SystemClock.elapsedRealtime() + ONLINE_CACHE_MS
+        }
+    }
+
+    private fun proxyFormStatus(
+        network: Network,
+        host: String,
+        handle: SocketHandle
+    ): Int {
         val socket = network.socketFactory.createSocket()
+        handle.attach(socket)
         try {
             socket.tcpNoDelay = true
             socket.connect(InetSocketAddress(host, 80), PROBE_TIMEOUT_MS)
@@ -253,10 +410,42 @@ internal object PortalDiscovery {
         }
     }
 
+    /**
+     * Lets the race winner abort the losing sockets instead of leaving them
+     * parked in the pool until their timeout. That keeps the next verification
+     * poll genuinely parallel even when several IPs are blackholed.
+     */
+    private class SocketHandle {
+        private val lock = Any()
+        private var socket: Socket? = null
+        private var cancelled = false
+
+        fun attach(value: Socket) {
+            val closeNow = synchronized(lock) {
+                if (cancelled) {
+                    true
+                } else {
+                    socket = value
+                    false
+                }
+            }
+            if (closeNow) runCatching { value.close() }
+        }
+
+        fun cancel() {
+            val open = synchronized(lock) {
+                cancelled = true
+                socket.also { socket = null }
+            }
+            runCatching { open?.close() }
+        }
+    }
+
     /** One IP in the online-check race; owns exactly one Sentry span. */
     private class OnlineCheck(
         private val span: ISpan?,
-        private val check: () -> Int
+        private val check: () -> Int,
+        private val onCancel: () -> Unit
     ) : Callable<Int> {
         private val spanLock = Any()
         private var spanDone = false
@@ -272,9 +461,9 @@ internal object PortalDiscovery {
                 failure = t
                 throw t
             } finally {
-                // Hold the lock while finishing. If cancelSpan already claimed
+                // Hold the lock while finishing. If cancel already claimed
                 // the span, it has finished it; if this thread claimed it, the
-                // caller's cancelSpan blocks until the finish completes. That
+                // caller's cancel blocks until the finish completes. That
                 // keeps every child span closed before the parent transaction.
                 val error = failure
                 synchronized(spanLock) {
@@ -290,8 +479,11 @@ internal object PortalDiscovery {
             }
         }
 
-        /** Finish a span whose check lost the race or was never started. */
-        fun cancelSpan() {
+        /** Abort the socket and finish a span whose check lost the race. */
+        fun cancel() {
+            // Claim and finish the span before closing the socket: the close
+            // makes the worker throw, and its finally must see spanDone=true
+            // so a deliberate cancellation is not reported as a socket error.
             synchronized(spanLock) {
                 if (!spanDone) {
                     spanDone = true
@@ -299,6 +491,87 @@ internal object PortalDiscovery {
                     span?.finish()
                 }
             }
+            onCancel()
+        }
+    }
+
+    /** One probe URL in the discovery race; owns exactly one Sentry span. */
+    private class ProbeCall(
+        private val span: ISpan?,
+        private val request: () -> PortalHttp.Http,
+        private val onCancel: () -> Unit
+    ) : Callable<PortalHttp.Http> {
+        private val spanLock = Any()
+        private var spanDone = false
+
+        override fun call(): PortalHttp.Http {
+            var response: PortalHttp.Http? = null
+            var failure: Throwable? = null
+            try {
+                val value = request()
+                response = value
+                return value
+            } catch (t: Throwable) {
+                failure = t
+                throw t
+            } finally {
+                val error = failure
+                synchronized(spanLock) {
+                    if (!spanDone) {
+                        spanDone = true
+                        if (error != null) {
+                            SentryTracing.failHttpSpan(span, error)
+                        } else {
+                            SentryTracing.finishHttpSpan(span, response?.code)
+                        }
+                    }
+                }
+            }
+        }
+
+        /** Abort the connection and finish a span whose probe lost the race. */
+        fun cancel() {
+            // Claim and finish the span before disconnecting: the disconnect
+            // makes the worker throw, and its finally must see spanDone=true
+            // so a deliberate cancellation is not reported as a network error.
+            synchronized(spanLock) {
+                if (!spanDone) {
+                    spanDone = true
+                    span?.status = SpanStatus.CANCELLED
+                    span?.finish()
+                }
+            }
+            onCancel()
+        }
+    }
+
+    /**
+     * Lets the probe winner disconnect the losing HTTP connections instead of
+     * leaving them parked in the pool until their read timeout.
+     */
+    private class ConnectionHandle {
+        private val lock = Any()
+        private var connection: HttpURLConnection? = null
+        private var cancelled = false
+
+        fun attach(value: HttpURLConnection) {
+            val closeNow = synchronized(lock) {
+                if (cancelled) {
+                    true
+                } else {
+                    connection = value
+                    false
+                }
+            }
+            if (closeNow) runCatching { value.disconnect() }
+        }
+
+        fun cancel() {
+            val open = synchronized(lock) {
+                cancelled = true
+                connection.also { connection = null }
+            }
+            runCatching { open?.disconnect() }
         }
     }
 }

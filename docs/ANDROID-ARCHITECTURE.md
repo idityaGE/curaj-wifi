@@ -22,16 +22,16 @@ Companion documents:
 | item | value |
 |---|---|
 | application id | `in.ac.curaj.autologin` |
-| version | **1.6.2** (versionCode **9**) |
+| version | **1.6.3-alpha4** (versionCode **13**) |
 | language | Kotlin |
 | minimum SDK | 26 (Android 8.0) |
 | target / compile SDK | 35 (Android 15) |
 | build | Gradle 8.14.6 wrapper, AGP 8.7.3, Kotlin 2.0.21, JDK 17 |
 | monitoring | Sentry Android 8.61.1, Gradle plugin 6.24.0 |
 | debug APK | `android/app/build/outputs/apk/debug/app-debug.apk` |
-| production APK | `dist/CURAJ-AutoLogin-1.6.2.apk` (release-signed) |
-| production SHA-256 | `1e192fa13e36247454728fe23fd12f13a1cb84dbddb220144b73752e224c1832` |
-| tested device | OnePlus CPH2793, Android 16 (1.5 live); 1.6.2 build/signature verified, on-device pass pending |
+| production APK | `dist/CURAJ-AutoLogin-1.6.3-alpha4.apk` (release-signed; build pending) |
+| production SHA-256 | set by the release build; see the release notes |
+| tested device | OnePlus CPH2793, Android 16 (1.5 live); 1.6.3-alpha4 build/signature verified, on-device pass pending |
 | campus Wi-Fi | `CURAJ CAMPUS CONNECT`, `wlan0`, `10.50.13.252/20` |
 | portal | `http://122.252.242.93/userportal` |
 
@@ -262,7 +262,7 @@ PortalClient.logout(network, user, pass)
         ├─ POST newlogin.do                -> bind cookie to live NAS session
         ├─ GET logout.do with that cookie  -> tear down portal session
         ├─ GET http://1.254.254.254/logout -> NAS fallback
-        └─ probe 4× at 1 s intervals
+        └─ poll online check until 6 s deadline (300 ms interval)
                204      -> failure: still online
                non-204  -> success: logged out
         │
@@ -285,7 +285,8 @@ endpoint errors is treated as unverified, not as a successful logout.
 
 ### 5.1 Probe without DNS
 
-The probe uses four fixed Google `generate_204` IP addresses, in order:
+The probe uses four fixed Google `generate_204` IP addresses, raced in
+parallel:
 
 ```
 http://142.251.150.120/generate_204
@@ -302,10 +303,11 @@ Wi-Fi `Network` therefore failed before the app ever reached the portal.
 The request is made with `network.openConnection(URL)`, which pins it to the
 Wi-Fi `Network`. Mobile data cannot win the route.
 
-This probe is used only for splash/portal discovery and still tries the IPs in
-order. The authoritative online check (§9.12) races all four in parallel and
-takes the first `204`, so one blackholed endpoint costs one socket timeout
-instead of four.
+Both the splash/portal discovery probe and the authoritative online check
+(§9.12) race all four IPs in parallel. Each request uses a short connect/read
+timeout (1.5 s / 2.5 s for probes), so one blackholed endpoint costs one
+timeout, not four, and never dominates login latency. The first HTTP response
+wins the discovery race; the first `204` wins the online race.
 
 ### 5.2 Portal discovery
 
@@ -338,8 +340,10 @@ POST http://122.252.242.93/userportal/newlogin.do
 ```
 
 Success is `errorKey == "success"` or `errorMessage == "success_net"`. The app
-then probes until it gets `204`, so a portal-side “success” that did not
-actually open the NAS gate is not reported as connected.
+then polls the authoritative online check with a bounded deadline (8 s, 300 ms
+between checks), so a portal-side “success” that did not actually open the NAS
+gate is not reported as connected. The same poll replaces the old fixed
+1 s + 2 s + 4 s sleeps; a fast gate now returns on the first check.
 
 The `sc` token is parsed from the portal URL but not generated; it is supplied
 by the NAS redirect and binds the portal session to the device identity.
@@ -401,12 +405,12 @@ wrong password from hammering the portal.
 ### 6.3 “Authentication already in progress” is not a hard failure
 
 If the portal says another authentication is in flight, the app does **not**
-send a second `newlogin.do`. It polls the probe once per second for up to six
-seconds. If the gate opens, the attempt is reported as a normal login. If it
-is still pending, `PortalClient` returns a transient result with
-`retryMs = 3000`; the service schedules a short retry and does not post a
-failure notification. The transient loop is bounded to 10 retries, after which
-it becomes a normal failure with backoff.
+send a second `newlogin.do`. It polls the authoritative online check until the
+gate opens or an 8-second deadline expires. If the gate opens, the attempt is
+reported as a normal login. If it is still pending, `PortalClient` returns a
+transient result with `retryMs = 3000`; the service schedules a short retry and
+does not post a failure notification. The transient loop is bounded to 10
+retries, after which it becomes a normal failure with backoff.
 
 This matters because Android’s own captive-portal activity can race the app for
 the same IP. Sending another login while the first is still being processed
@@ -430,8 +434,9 @@ In that case the app:
 
 1. calls `logout.do` with the current `JSESSIONID`;
 2. calls the NAS logout (`http://1.254.254.254/logout`);
-3. waits 1.5 s;
-4. checks for `204`; if not, retries the login once.
+3. waits 500 ms for the NAS to process the logout;
+4. polls the authoritative online check with an 8-second deadline; if the gate
+   does not open, retries the login once.
 
 This clears the half-session without an unbounded retry loop.
 
@@ -635,7 +640,8 @@ counterproductive.
 
 * Detect “already in progress” / “authentication already” case-insensitively.
 * Do not POST another login.
-* Poll the probe for up to six seconds; return success as soon as it is `204`.
+* Poll the authoritative online check with an 8-second deadline; return success
+  as soon as it is `204`.
 * If still pending, return a transient result with a 3-second retry.
 * Bound transient retries to 10 and suppress failure notifications during
   them.
@@ -654,8 +660,9 @@ for the new request.
 
 **Fix**
 
-Logout with the current cookie, NAS logout, wait 1.5 s, verify, retry once.
-The retry is depth-limited so it cannot recurse forever.
+Logout with the current cookie, NAS logout, wait 500 ms, poll the authoritative
+online check, and retry once. The retry is depth-limited so it cannot recurse
+forever.
 
 ### 9.4 “Portal said success but internet is still blocked”
 
@@ -666,8 +673,10 @@ can arrive before traffic is actually allowed.
 
 **Fix**
 
-Always verify with the probe. `login()` polls up to 9 seconds after a portal
-success and only returns success on `204`.
+Always verify with the authoritative online check. `login()` polls with an
+8-second deadline after a portal success and only returns success on `204`.
+The first check runs immediately, so a gate that is already open does not pay
+a fixed sleep.
 
 ### 9.5 Notification spam
 
@@ -812,15 +821,24 @@ successful logout.
   proxy-form request target
   `GET http://connectivitycheck.gstatic.com/generate_204 HTTP/1.1`,
   response head only (the status line is all an online check needs).
-* The four online checks run in parallel; the first `204` wins. Checks that
-  lose the race have their Sentry spans finished as cancelled before the
-  parent transaction closes, and their sockets are left to time out.
+* The four online checks run in parallel; the first `204` wins. The
+  splash/portal discovery probe now races the same four IPs in parallel too.
+  Checks that lose either race have their Sentry spans finished as cancelled
+  before the parent span/transaction closes, and their sockets are left to
+  time out.
 * `checkOnline()` also reports whether any endpoint answered. Logout
   verification only accepts a non-204 answer as proof of logout; if every
   endpoint errors, it reports `could not verify logout` and leaves auto-login
   off.
 * Every online check — entry "already online", in-progress wait, post-login
-  verification, logout verification — now calls `isOnline()`.
+  verification, logout verification — now calls the authoritative check.
+  Logout deliberately uses `checkOnline()` instead of `isOnline()` so the
+  positive cache and OS hint cannot fake a verified logout.
+* `isOnline()` first consults `ConnectivityManager`: a network with
+  `NET_CAPABILITY_VALIDATED` is online without spending a probe timeout, and a
+  network with `NET_CAPABILITY_CAPTIVE_PORTAL` still goes through the HTTP
+  race. A positive result is cached for 10 s and invalidated when the network
+  or its validated state changes, which absorbs duplicate triggers.
 * The origin-form `probe()` remains only for splash/portal discovery, where
   it works pre-auth and never gates an online decision.
 
@@ -867,13 +885,74 @@ crash.
   allowance false.
 * The denial check compares the API-31 exception class name behind an SDK
   check instead of referencing the class directly, so the guard also loads on
-  Android 8-11.
+  Android 8-11. It walks the cause chain and accepts either
+  `ForegroundServiceStartNotAllowedException` or its
+  `ServiceStartNotAllowedException` parent, so OEM wrappers are handled too.
 
 **Verification**
 
 `assembleDebug`, `lintDebug`, and `assembleRelease` pass. The physical-device
 denial/restart path still needs a live pass; see
 [ANDROID-TEST.md](ANDROID-TEST.md#86-16-auto-connect-and-sentry-pending-on-device).
+
+---
+
+### 9.14 `portal.login` p95 above ten seconds (1.6.3-alpha4)
+
+**Symptom**
+
+Sentry reported `portal.login` (operation `portal`) at p95 **11,051.876 ms**,
+average **1,326.8 ms**, over 190 events in the 30-day window. The slowest trace
+was 19.35 s: three sequential `GET /generate_204` spans of 7.329 s, 6.009 s,
+and 6.006 s, all with `portal.step=online_check`; the actual portal POSTs were
+under a second. Per-release p95 was 16.01 s on `1.6.2+9`, 13.06 s on
+`1.6.3-alpha1+10`, and 1.13 s on `1.6.1+8`.
+
+**Cause**
+
+The online check tried the four probe IPs in order with a 6–7 s timeout. When
+the first IPs were blackholed, the app paid a full timeout for each before
+reaching a responsive one. `1.6.3-alpha3` parallelized the online check, but
+`probe()` still tried its four URLs in order with 7 s connect/read timeouts, so
+splash discovery could still cost up to four timeouts. The verification loops
+then added fixed `1 s + 2 s + 4 s` sleeps on top of full online checks, and
+logout added `4 × 1 s` sleeps. A single slow phase could therefore stack into
+the 8–19 s tail.
+
+**Fix**
+
+* `PortalDiscovery.probe()` races all four URLs on its own daemon pool and
+  returns the first HTTP response. A `204` from the probe is treated as
+  “already online” instead of “no captive portal”.
+* Probe requests use a 1.5 s connect / 2.5 s read timeout; normal portal calls
+  use 2 s / 5 s. The old 7 s timeouts are gone.
+* Post-login verification, the in-progress wait, stale-session recovery, and
+  logout verification poll the authoritative check with hard deadlines
+  (8 s for login, 6 s for logout) and a 300 ms interval. The first check runs
+  immediately, so the common fast case no longer waits for a fixed sleep.
+* `isOnline()` uses `NET_CAPABILITY_VALIDATED` as a fast path, treats
+  `NET_CAPABILITY_CAPTIVE_PORTAL` as a negative, and caches only positive
+  results for 10 s. The cache is invalidated when the network or its validated
+  state changes.
+* The online check and probe now each have a parent span
+  (`portal.online_check`, `portal.probe`) so the four racing HTTP children are
+  attributed to one operation in Sentry.
+* The foreground-service denial guard now walks the cause chain and accepts
+  the `ServiceStartNotAllowedException` parent; `BootReceiver` also logs a
+  failed foreground-service start instead of swallowing it.
+
+**Verification**
+
+`assembleDebug`, `lintDebug`, `assembleRelease`, and `lintRelease` pass; lint
+reports 34 warnings (one fewer than 1.6.2/alpha3) and no new ones. Sentry has
+no `1.6.3-alpha3` release or events because that build was never installed, so
+the latency improvement cannot be confirmed from existing telemetry. Install
+`1.6.3-alpha4` (`versionCode 13`) and check:
+
+* `CURAJ-WIFI-2` stops appearing;
+* `portal.login` p95 drops below 3 s on the same network;
+* the slowest traces show parallel `online_check`/`probe` children, not
+  sequential 6–7 s timeouts.
 
 ---
 

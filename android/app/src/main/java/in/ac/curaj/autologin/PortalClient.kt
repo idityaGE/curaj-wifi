@@ -2,6 +2,7 @@ package `in`.ac.curaj.autologin
 
 import android.content.Context
 import android.net.Network
+import android.os.SystemClock
 import android.util.Log
 import io.sentry.Sentry
 import io.sentry.SentryLevel
@@ -32,6 +33,15 @@ object PortalClient {
     private const val TAG = "PortalClient"
     private const val REQUEST_URI = "http://connectivitycheck.gstatic.com/generate_204"
     private const val NAS_LOGOUT_URL = "http://1.254.254.254/logout"
+
+    /**
+     * After the portal says success, the NAS may still be opening the gate.
+     * Poll with a hard deadline instead of fixed sleeps, so a fast gate adds
+     * almost no latency and a slow one still cannot run forever.
+     */
+    private const val VERIFY_TIMEOUT_MS = 8_000L
+    private const val VERIFY_POLL_MS = 300L
+    private const val LOGOUT_VERIFY_TIMEOUT_MS = 6_000L
 
     data class Result(
         val ok: Boolean,
@@ -148,6 +158,17 @@ object PortalClient {
             return Result(false, "probe failed")
         }
 
+        // The network may have come online while the probe was racing. A 204
+        // means there is nothing to log in to, so do not fail with "no
+        // captive portal" or post credentials to a validated network.
+        if (first.code == 204) {
+            return Result(
+                true,
+                "already online",
+                kind = Result.Kind.ALREADY_ONLINE
+            )
+        }
+
         val portal = PortalDiscovery.findPortal(first, network)
             ?: return Result(false, "no captive portal (HTTP ${first.code})")
 
@@ -252,11 +273,8 @@ object PortalClient {
 
             if (inProgress) {
                 Log.i(TAG, "portal is already authenticating this IP; waiting")
-                repeat(6) {
-                    Thread.sleep(1000)
-                    if (isOnline(network, "verify_online")) {
-                        return Result(true, "logged in")
-                    }
+                if (awaitOnline(network, VERIFY_TIMEOUT_MS, "verify_online")) {
+                    return Result(true, "logged in")
                 }
                 return Result(
                     false,
@@ -278,8 +296,10 @@ object PortalClient {
                 runCatching {
                     PortalHttp.request(network, NAS_LOGOUT_URL, step = "nas_logout")
                 }
-                Thread.sleep(1500)
-                if (isOnline(network, "verify_online")) {
+                // The NAS needs a moment to process the logout before the
+                // gate can open; then poll instead of sleeping a fixed 1.5 s.
+                Thread.sleep(500L)
+                if (awaitOnline(network, VERIFY_TIMEOUT_MS, "verify_online")) {
                     return Result(
                         true,
                         "already online",
@@ -299,16 +319,29 @@ object PortalClient {
             return Result(false, "rejected: $reason")
         }
 
-        // 4. the portal sometimes answers before the NAS opens the gate;
-        // the NAS can also blackhole briefly while switching, and isOnline
-        // tolerates probe failures by falling through to the next endpoint.
-        for (delayMs in longArrayOf(1_000L, 2_000L, 4_000L)) {
-            Thread.sleep(delayMs)
-            if (isOnline(network, "verify_online")) {
-                return Result(true, "logged in")
-            }
+        // 4. the portal sometimes answers before the NAS opens the gate; the
+        // NAS can also blackhole briefly while switching. Poll with a hard
+        // deadline so the common fast case does not pay a fixed sleep.
+        if (awaitOnline(network, VERIFY_TIMEOUT_MS, "verify_online")) {
+            return Result(true, "logged in")
         }
         return Result(false, "portal said success but internet is still blocked")
+    }
+
+    /**
+     * Poll the authoritative online check until it succeeds or [timeoutMs]
+     * expires. Each check is bounded by the probe race, so a blackholed
+     * network cannot extend the wait by more than one check per poll.
+     */
+    private fun awaitOnline(network: Network, timeoutMs: Long, step: String): Boolean {
+        val deadline = SystemClock.elapsedRealtime() + timeoutMs
+        while (SystemClock.elapsedRealtime() < deadline) {
+            if (isOnline(network, step)) return true
+            val remaining = deadline - SystemClock.elapsedRealtime()
+            if (remaining <= 0) break
+            Thread.sleep(minOf(VERIFY_POLL_MS, remaining))
+        }
+        return false
     }
 
     /**
@@ -383,15 +416,18 @@ object PortalClient {
             PortalHttp.request(network, NAS_LOGOUT_URL, step = "nas_logout")
         }
 
-        repeat(4) {
-            Thread.sleep(1000)
-            // isOnline (not the origin-form probe): a 400 from the gateway
-            // Squid must not be mistaken for "logged out". A network with no
-            // response at all is not evidence either; fail closed instead.
+        // checkOnline (not isOnline) is deliberate: a 400 from the gateway
+        // Squid must not be mistaken for "logged out", and a network with no
+        // response at all is not evidence either. Fail closed instead.
+        val deadline = SystemClock.elapsedRealtime() + LOGOUT_VERIFY_TIMEOUT_MS
+        while (SystemClock.elapsedRealtime() < deadline) {
             val check = PortalDiscovery.checkOnline(network, "verify_logout")
             if (!check.online && check.responded) {
                 return Result(true, "logged out")
             }
+            val remaining = deadline - SystemClock.elapsedRealtime()
+            if (remaining <= 0) break
+            Thread.sleep(minOf(VERIFY_POLL_MS, remaining))
         }
         return Result(false, "could not verify logout")
     }

@@ -65,12 +65,32 @@ object SentryTracing {
     }
 
     /**
+     * Start a child span for one portal operation. Returns `null` when no
+     * portal transaction is active, so callers can use it unconditionally.
+     */
+    fun startSpan(operation: String, description: String, step: String? = null): ISpan? {
+        val parent = currentTransaction.get() ?: return null
+        val span = parent.startChild(operation, description)
+        if (step != null) span.setData("portal.step", step)
+        return span
+    }
+
+    /**
      * Start a child span for one HTTP request. Returns `null` when no portal
      * transaction is active, so callers can use it unconditionally.
+     *
+     * [parent] lets a caller nest a request under a more specific span (for
+     * example the online-check race) instead of directly under the
+     * transaction. Pass `null` to use the active transaction.
      */
-    fun startHttpSpan(method: String, url: String, step: String? = null): ISpan? {
-        val parent = currentTransaction.get() ?: return null
-        val span = parent.startChild("http.client", httpDescription(method, url))
+    fun startHttpSpan(
+        method: String,
+        url: String,
+        step: String? = null,
+        parent: ISpan? = null
+    ): ISpan? {
+        val target = parent ?: currentTransaction.get() ?: return null
+        val span = target.startChild("http.client", httpDescription(method, url))
         span.setData("http.request.method", method)
         span.setData("http.url", sanitizeUrl(url))
         if (step != null) span.setData("portal.step", step)

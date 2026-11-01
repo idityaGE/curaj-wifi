@@ -29,6 +29,7 @@ Everything here was derived from live traffic on `CURAJ CAMPUS CONNECT`
 | [docs/RELEASE-NOTES-1.6.1.md](docs/RELEASE-NOTES-1.6.1.md) | 1.6.1 patch notes: online-check fix for the gateway Squid, checksum, verification status |
 | [docs/RELEASE-NOTES-1.6.2.md](docs/RELEASE-NOTES-1.6.2.md) | 1.6.2 patch notes: foreground-service crash fix, per-request Sentry spans, checksum, verification status |
 | [docs/RELEASE-NOTES-1.6.3-alpha3.md](docs/RELEASE-NOTES-1.6.3-alpha3.md) | 1.6.3-alpha3 notes: smaller APK, parallel online checks, attempt/logout/network hardening, checksum, verification status |
+| [docs/RELEASE-NOTES-1.6.3-alpha4.md](docs/RELEASE-NOTES-1.6.3-alpha4.md) | 1.6.3-alpha4 notes: parallel discovery, short split timeouts, bounded verification, OS fast path/cache, crash-guard hardening |
 | [docs/SESSION-MANAGEMENT.md](docs/SESSION-MANAGEMENT.md) | the two-session limit, self-care login, why the splash context cookie is required, and verified close semantics |
 | [docs/WINDOWS.md](docs/WINDOWS.md) | Windows client: architecture (service + tray), state machine, UI contract, security posture, troubleshooting |
 | [docs/WINDOWS-TEST.md](docs/WINDOWS-TEST.md) | Windows checklist for a friend's laptop: install, login, session-limit one-click fix, reboot persistence, uninstall |
