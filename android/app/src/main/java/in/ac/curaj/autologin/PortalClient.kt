@@ -6,17 +6,16 @@ import android.util.Log
 import io.sentry.Sentry
 import io.sentry.SentryLevel
 import org.json.JSONObject
-import java.io.IOException
-import java.io.InputStream
-import java.io.Reader
-import java.net.HttpURLConnection
-import java.net.InetSocketAddress
 import java.net.URI
-import java.net.URL
 import java.net.URLDecoder
 import java.net.URLEncoder
 
 /**
+ * Facade for the campus portal. This object owns the login/logout flow and
+ * keeps the public API stable; transport lives in [PortalHttp], discovery and
+ * online checks in [PortalDiscovery], and self-care sessions in
+ * [PortalSessions].
+ *
  * Reproduces exactly what the Inventum/RailWire portal does in a browser:
  *
  *   GET  http://142.251.150.120/generate_204      (must be 204; no DNS)
@@ -28,54 +27,11 @@ import java.net.URLEncoder
  * `Network.openConnection` pins the request to the Wi-Fi network, so an
  * active mobile-data connection cannot steal it (the same trap the Linux
  * client solves with SO_BINDTODEVICE).
- *
- * The probe deliberately uses an IP literal. Resolving
- * connectivitycheck.gstatic.com through the captive Wi-Fi returns NXDOMAIN
- * until after login, even though the host is reachable. The portal intercepts
- * any HTTP request, including this one, and answers with its meta-refresh
- * splash page.
- *
- * The authoritative online check (isOnline) additionally sends the request as
- * a proxy-form (absolute-URI) target on a raw socket. The campus gateway
- * Squid answers browser-style origin-form requests ("GET /generate_204" +
- * Host:) with 400 ERR_INVALID_URL even for authenticated clients, which would
- * make an online device look blocked forever. The same Squid proxies
- * proxy-form requests normally and still intercepts them with the splash page
- * pre-auth, so only that form distinguishes online/blocked in both states.
  */
 object PortalClient {
     private const val TAG = "PortalClient"
     private const val REQUEST_URI = "http://connectivitycheck.gstatic.com/generate_204"
     private const val NAS_LOGOUT_URL = "http://1.254.254.254/logout"
-    private const val PORTAL_HOST = "122.252.242.93"
-    private const val SELF_CARE_LOGIN_PATH =
-        "/userportal/pages/usermedia/curaj/app/campus/ui/login.jsp"
-    private const val CURRENT_SESSIONS_PATH =
-        "/userportal/currentSessions.do?from=Home"
-
-    private const val PROBE_TIMEOUT_MS = 6000
-    private const val MAX_HEAD_CHARS = 32_000
-    private const val MAX_RESPONSE_CHARS = 1_048_576
-
-    /** Matches "HTTP/1.x <code>" in the first line of a response head. */
-    private val STATUS_LINE = Regex("""(?i)HTTP/\d(?:\.\d)?\s+(\d{3})""")
-
-    /** Google generate_204 endpoints by IP; tried in order, no DNS needed. */
-    private val CHECK_IPS = listOf(
-        "142.251.150.120",
-        "142.250.183.36",
-        "142.250.72.196",
-        "142.251.32.14"
-    )
-
-    private val CHECK_URLS = CHECK_IPS.map { "http://$it/generate_204" }
-
-    /**
-     * Credentials are only ever posted to the real campus portal. Without
-     * this, a hostile Wi-Fi could serve a fake "/userportal" page and harvest
-     * the password. Update this set if the university moves the portal.
-     */
-    private val PORTAL_HOSTS = setOf(PORTAL_HOST)
 
     data class Result(
         val ok: Boolean,
@@ -126,18 +82,6 @@ object PortalClient {
         val sessions: List<Session> = emptyList(),
         val message: String = ""
     )
-
-    private data class Http(
-        val code: Int,
-        val headers: Map<String, List<String>>,
-        val body: String,
-        val url: String
-    ) {
-        fun header(name: String): String? = headerAll(name).firstOrNull()
-        fun headerAll(name: String): List<String> =
-            headers.entries.firstOrNull { it.key.equals(name, ignoreCase = true) }
-                ?.value.orEmpty()
-    }
 
     @Synchronized
     fun login(
@@ -198,35 +142,33 @@ object PortalClient {
         }
 
         val first = try {
-            probe(network)
+            PortalDiscovery.probe(network)
         } catch (e: Exception) {
             return Result(false, "probe failed: ${e.message}")
         }
 
-        val portal = findPortal(first, network)
+        val portal = PortalDiscovery.findPortal(first, network)
             ?: return Result(false, "no captive portal (HTTP ${first.code})")
 
-        Log.i(TAG, "portal: ${redactUrl(portal)}")
+        Log.i(TAG, "portal: ${PortalHttp.redactUrl(portal)}")
 
         val uri = runCatching { URI(portal) }
             .getOrElse { return Result(false, "bad portal URL") }
         val authority = uri.authority ?: return Result(false, "portal host missing")
         val host = uri.host ?: return Result(false, "portal host missing")
-        if (host !in PORTAL_HOSTS) {
+        if (!PortalDiscovery.isTrustedPortal(portal)) {
             return Result(false, "refusing to send credentials to $host")
         }
         val requestUri = query(uri.rawQuery)["requesturi"] ?: REQUEST_URI
 
         // 1. portal session (JSESSIONID carries ip/mac/sc context)
         val splash = try {
-            request(network, portal, step = "splash")
+            PortalHttp.request(network, portal, step = "splash")
         } catch (e: Exception) {
             return Result(false, "portal unreachable: ${e.message}")
         }
 
-        val cookie = splash.headerAll("Set-Cookie")
-            .firstOrNull { it.startsWith("JSESSIONID=", ignoreCase = true) }
-            ?.substringBefore(';')
+        val cookie = PortalDiscovery.cookieFrom(splash)
             ?: return Result(false, "portal issued no JSESSIONID")
 
         val common = mapOf(
@@ -237,7 +179,7 @@ object PortalClient {
 
         // 2. the same hop the browser makes before showing the form
         try {
-            request(
+            PortalHttp.request(
                 network,
                 "http://$authority/userportal/login.do?requesturi=" +
                     URLEncoder.encode(requestUri, "UTF-8"),
@@ -258,7 +200,7 @@ object PortalClient {
         }
 
         val resp = try {
-            request(
+            PortalHttp.request(
                 network,
                 "http://$authority/userportal/newlogin.do",
                 method = "POST",
@@ -325,7 +267,7 @@ object PortalClient {
 
             if (stale && depth == 0) {
                 runCatching {
-                    request(
+                    PortalHttp.request(
                         network,
                         "http://$authority/userportal/logout.do",
                         headers = mapOf("Cookie" to cookie),
@@ -333,7 +275,7 @@ object PortalClient {
                     )
                 }
                 runCatching {
-                    request(network, NAS_LOGOUT_URL, step = "nas_logout")
+                    PortalHttp.request(network, NAS_LOGOUT_URL, step = "nas_logout")
                 }
                 Thread.sleep(1500)
                 if (isOnline(network, "verify_online")) {
@@ -379,25 +321,23 @@ object PortalClient {
             return Result(false, "no credentials saved")
         }
 
-        val portal = findPortalForLogout(network)
+        val portal = PortalDiscovery.findPortalForLogout(network)
             ?: return Result(false, "campus portal not reachable")
 
         val uri = runCatching { URI(portal) }.getOrNull()
             ?: return Result(false, "bad portal URL")
         val authority = uri.authority ?: return Result(false, "portal host missing")
         val host = uri.host ?: return Result(false, "portal host missing")
-        if (host !in PORTAL_HOSTS) {
+        if (!PortalDiscovery.isTrustedPortal(portal)) {
             return Result(false, "refusing to send credentials to $host")
         }
 
         val splash = try {
-            request(network, portal, step = "splash")
+            PortalHttp.request(network, portal, step = "splash")
         } catch (e: Exception) {
             return Result(false, "portal unreachable: ${e.message}")
         }
-        val cookie = splash.headerAll("Set-Cookie")
-            .firstOrNull { it.startsWith("JSESSIONID=", ignoreCase = true) }
-            ?.substringBefore(';')
+        val cookie = PortalDiscovery.cookieFrom(splash)
             ?: return Result(false, "portal issued no JSESSIONID")
 
         val common = mapOf(
@@ -414,7 +354,7 @@ object PortalClient {
         // Bind the fresh JSESSIONID to the live NAS session. The result may
         // legitimately be "session already running"; only the cookie matters.
         runCatching {
-            request(
+            PortalHttp.request(
                 network,
                 "http://$authority/userportal/newlogin.do",
                 method = "POST",
@@ -425,16 +365,21 @@ object PortalClient {
         }
 
         val logoutResult = runCatching {
-            request(
+            PortalHttp.request(
                 network,
                 "http://$authority/userportal/logout.do",
                 headers = mapOf("Cookie" to cookie),
                 step = "logout"
             )
         }
-        Log.i(TAG, "logout.do -> ${logoutResult.getOrNull()?.code ?: logoutResult.exceptionOrNull()?.message}")
+        Log.i(
+            TAG,
+            "logout.do -> ${logoutResult.getOrNull()?.code ?: logoutResult.exceptionOrNull()?.message}"
+        )
 
-        runCatching { request(network, NAS_LOGOUT_URL, step = "nas_logout") }
+        runCatching {
+            PortalHttp.request(network, NAS_LOGOUT_URL, step = "nas_logout")
+        }
 
         repeat(4) {
             Thread.sleep(1000)
@@ -447,304 +392,21 @@ object PortalClient {
         return Result(false, "could not verify logout")
     }
 
-    /**
-     * Open the portal's *self-care* login (`type=1`), not the internet login
-     * (`type=2`).  This management session can list and close internet
-     * sessions even when the account already has its two-session maximum, and
-     * it does not consume a third session itself.
-     */
     fun listSessions(
         network: Network,
         user: String,
         pass: String
-    ): SessionsResult {
-        if (user.isBlank() || pass.isBlank()) {
-            return SessionsResult(false, message = "no credentials saved")
-        }
-        val snapshot = selfCareSnapshot(network, user, pass)
-        return SessionsResult(snapshot.ok, snapshot.sessions, snapshot.message)
-    }
+    ): SessionsResult = PortalSessions.listSessions(network, user, pass)
 
-    /** Close one chosen session and verify it is gone from the live list. */
     fun logoutSession(
         network: Network,
         user: String,
         pass: String,
         id: String
-    ): Result {
-        if (!id.matches(Regex("\\d+"))) {
-            return Result(false, "session id must be numeric")
-        }
-        if (user.isBlank() || pass.isBlank()) {
-            return Result(false, "no credentials saved")
-        }
+    ): Result = PortalSessions.logoutSession(network, user, pass, id)
 
-        val snapshot = selfCareSnapshot(network, user, pass)
-        val initialCookie = snapshot.cookie
-        if (!snapshot.ok || initialCookie == null) {
-            return Result(false, snapshot.message.ifBlank {
-                "could not open self-care session"
-            })
-        }
-        var cookie: String = initialCookie
-        if (snapshot.sessions.none { it.id == id }) {
-            return Result(false, "session $id is not active")
-        }
-
-        val response = try {
-            request(
-                network,
-                "http://$PORTAL_HOST/userportal/logout.do" +
-                    "?from=curses&sesno=$id",
-                method = "POST",
-                body = ByteArray(0),
-                headers = mapOf(
-                    "Cookie" to cookie,
-                    "Content-Type" to "application/x-www-form-urlencoded",
-                    "Referer" to
-                        "http://$PORTAL_HOST$CURRENT_SESSIONS_PATH",
-                    "Origin" to "http://$PORTAL_HOST"
-                ),
-                step = "session_close"
-            )
-        } catch (e: Exception) {
-            return Result(false, "logout request failed: ${e.message}")
-        }
-
-        // A 302 to http://1.254.254.254?N=... is not proof: an invalid or
-        // unauthorised id gets the same redirect and the session survives.
-        // Re-list and only report success when the id is really gone.
-        repeat(4) {
-            Thread.sleep(800)
-            val page = runCatching {
-                fetchSessionsPage(network, cookie, step = "verify_sessions_page")
-            }.getOrNull()
-            if (page != null) {
-                val text = page.body
-                val validPage =
-                    !text.contains("Session has been expired", ignoreCase = true) &&
-                        (text.contains("Current Session", ignoreCase = true) ||
-                            text.contains("items found", ignoreCase = true))
-                if (validPage && parseSessions(text).none { it.id == id }) {
-                    return Result(true, "logged out session $id")
-                }
-            }
-
-            // The context/self-care cookie expired; open a fresh one.
-            val after = selfCareSnapshot(network, user, pass)
-            if (after.ok && after.sessions.none { it.id == id }) {
-                return Result(true, "logged out session $id")
-            }
-            if (after.ok) after.cookie?.let { cookie = it }
-        }
-
-        return Result(
-            false,
-            "portal did not close session $id (HTTP ${response.code})"
-        )
-    }
-
-    private data class SelfCareSnapshot(
-        val ok: Boolean,
-        val cookie: String?,
-        val sessions: List<Session>,
-        val message: String
-    )
-
-    private fun selfCareSnapshot(
-        network: Network,
-        user: String,
-        pass: String
-    ): SelfCareSnapshot {
-        val cookie = try {
-            selfCareCookie(network, user, pass)
-        } catch (e: Exception) {
-            return SelfCareSnapshot(
-                false, null, emptyList(),
-                "self-care login failed: ${e.message}"
-            )
-        } ?: return SelfCareSnapshot(
-            false, null, emptyList(), "self-care login issued no JSESSIONID"
-        )
-
-        var current = cookie
-        var page = try {
-            fetchSessionsPage(network, current)
-        } catch (e: Exception) {
-            return SelfCareSnapshot(
-                false, null, emptyList(), "session list failed: ${e.message}"
-            )
-        }
-
-        if (page.body.contains("Session has been expired", ignoreCase = true)) {
-            current = try {
-                selfCareCookie(network, user, pass)
-            } catch (e: Exception) {
-                null
-            } ?: return SelfCareSnapshot(
-                false, null, emptyList(), "self-care session expired"
-            )
-            page = try {
-                fetchSessionsPage(network, current)
-            } catch (e: Exception) {
-                return SelfCareSnapshot(
-                    false, null, emptyList(), "session list failed: ${e.message}"
-                )
-            }
-        }
-
-        if (page.body.contains("Session has been expired", ignoreCase = true)) {
-            return SelfCareSnapshot(
-                false, null, emptyList(),
-                "self-care login failed (check the saved password)"
-            )
-        }
-        if (!page.body.contains("Current Session", ignoreCase = true) &&
-            !page.body.contains("items found", ignoreCase = true)
-        ) {
-            return SelfCareSnapshot(
-                false, null, emptyList(),
-                "unexpected session page (check the saved password)"
-            )
-        }
-        return SelfCareSnapshot(true, current, parseSessions(page.body), "")
-    }
-
-    /**
-     * The self-care page on its own can list sessions but cannot close them:
-     * logout.do then redirects to the NAS splash and leaves the session alive.
-     * The cookie from the portal splash URL carries the ip/mac/nas/sc context
-     * that the portal requires for a real close, so obtain that first.
-     */
-    private fun portalContextCookie(network: Network): String? {
-        val portal = findPortalForContext(network) ?: return null
-        if (!isTrustedPortal(portal)) {
-            Log.w(
-                TAG,
-                "refusing portal context from untrusted host: ${redactUrl(portal)}"
-            )
-            return null
-        }
-        return cookieFrom(request(network, portal, step = "context"))
-    }
-
-    private fun findPortalForContext(network: Network): String? {
-        // Captive: the probe response already carries a fresh sc token.
-        try {
-            val first = probe(network)
-            if (first.code != 204) {
-                findPortal(first, network)?.let {
-                    if (isTrustedPortal(it)) return it
-                }
-            }
-        } catch (_: Exception) {
-            // fall through to the NAS splash
-        }
-        // Online: the probe is 204 and has no portal URL.
-        return findPortalForLogout(network)?.takeIf { isTrustedPortal(it) }
-    }
-
-    private fun isTrustedPortal(url: String): Boolean =
-        runCatching { URI(url).host?.lowercase() }.getOrNull() in PORTAL_HOSTS
-
-    private fun selfCareCookie(
-        network: Network,
-        user: String,
-        pass: String
-    ): String? {
-        val base = "http://$PORTAL_HOST"
-        val loginPage = base + SELF_CARE_LOGIN_PATH
-
-        // Prefer the context cookie.  Fall back to the direct self-care page
-        // only so listing still works when the NAS splash is unavailable;
-        // closing a session will then fail verification instead of lying.
-        var cookie = portalContextCookie(network)
-        if (cookie == null) {
-            val first = request(network, loginPage, step = "selfcare_login_page")
-            cookie = cookieFrom(first) ?: return null
-        }
-
-        val form = buildString {
-            append("generatePassword=true&phone=0&type=1")
-            append("&username=").append(URLEncoder.encode(user, "UTF-8"))
-            append("&password=").append(URLEncoder.encode(pass, "UTF-8"))
-        }
-        val second = request(
-            network,
-            "$base/userportal/newlogin.do",
-            method = "POST",
-            body = form.toByteArray(),
-            headers = mapOf(
-                "Cookie" to cookie,
-                "Content-Type" to "application/x-www-form-urlencoded",
-                "Referer" to loginPage,
-                "Origin" to base
-            ),
-            step = "selfcare_newlogin"
-        )
-        cookieFrom(second)?.let { cookie = it }
-        return cookie
-    }
-
-    private fun fetchSessionsPage(
-        network: Network,
-        cookie: String,
-        step: String = "sessions_page"
-    ): Http =
-        request(
-            network,
-            "http://$PORTAL_HOST$CURRENT_SESSIONS_PATH",
-            headers = mapOf(
-                "Cookie" to cookie,
-                "Referer" to "http://$PORTAL_HOST/userportal/home.do?from=Home"
-            ),
-            step = step
-        )
-
-    private fun cookieFrom(resp: Http): String? =
-        resp.headerAll("Set-Cookie")
-            .firstOrNull {
-                it.startsWith("JSESSIONID=", ignoreCase = true)
-            }
-            ?.substringBefore(';')
-
-    private fun parseSessions(page: String): List<Session> {
-        val sessions = mutableListOf<Session>()
-        val rowRegex = Regex("(?is)<tr[^>]*>(.*?)</tr>")
-        val cellRegex = Regex("(?is)<td[^>]*>(.*?)</td>")
-        val idRegex = Regex("""callClose\((\d+)\)""")
-
-        for (row in rowRegex.findAll(page)) {
-            val rowHtml = row.groupValues[1]
-            val id = idRegex.find(rowHtml)?.groupValues?.get(1) ?: continue
-            val cells = cellRegex.findAll(rowHtml)
-                .map { cleanCell(it.groupValues[1]) }
-                .toList()
-            if (cells.size < 9) continue
-            sessions += Session(
-                id = id,
-                name = cells.getOrElse(0) { "" },
-                accountId = cells.getOrElse(1) { "" },
-                ratePlan = cells.getOrElse(2) { "" },
-                netId = cells.getOrElse(3) { "" },
-                startTime = cells.getOrElse(4) { "" },
-                duration = cells.getOrElse(5) { "" },
-                upload = cells.getOrElse(6) { "" },
-                download = cells.getOrElse(7) { "" },
-                total = cells.getOrElse(8) { "" }
-            )
-        }
-        return sessions
-    }
-
-    private fun cleanCell(raw: String): String =
-        raw.replace(Regex("(?is)<[^>]+>"), " ")
-            .replace("&nbsp;", " ", ignoreCase = true)
-            .replace("&amp;", "&", ignoreCase = true)
-            .replace("&lt;", "<", ignoreCase = true)
-            .replace("&gt;", ">", ignoreCase = true)
-            .replace(Regex("\\s+"), " ")
-            .trim()
+    fun isOnline(network: Network, step: String = "online_check"): Boolean =
+        PortalDiscovery.isOnline(network, step)
 
     private fun isBindError(e: Throwable): Boolean {
         var current: Throwable? = e
@@ -768,221 +430,6 @@ object PortalClient {
             value.contains("maximum of 2") ||
             value.contains("subscription allow")
     }
-
-    private fun findPortalForLogout(network: Network): String? {
-        // While online the probe is 204 and has no portal URL, so the NAS
-        // splash is the reliable discovery point; it answers in both states.
-        // /login is the reliable splash hop; / sometimes blackholes while online.
-        for (splash in listOf("http://1.254.254.254/login", "http://1.254.254.254/")) {
-            try {
-                val found = findPortal(
-                    request(network, splash, step = "discovery"),
-                    network
-                )
-                if (found != null && found.contains("/userportal")) return found
-            } catch (_: Exception) {
-                // try the next splash URL
-            }
-        }
-        return null
-    }
-
-    private fun findPortal(resp: Http, network: Network): String? {
-        val candidates = mutableListOf<String>()
-        resp.header("Location")?.let { candidates += it }
-        META.find(resp.body)?.groupValues?.get(1)?.let { candidates += it }
-        JS.find(resp.body)?.groupValues?.get(1)?.let { candidates += it }
-        ANY.findAll(resp.body).forEach { candidates += it.value }
-
-        for (raw in candidates) {
-            val cleaned = raw.replace(" ", "%20")
-            // meta/JS redirects may be relative; resolve them against the page
-            val url = runCatching {
-                URI(resp.url).resolve(cleaned).toString()
-            }.getOrElse { cleaned }
-            if (!url.contains("/userportal") && !url.contains("1.254.254.254")) continue
-
-            if (runCatching { URI(url).host }.getOrNull() == "1.254.254.254") {
-                try {
-                    val deeper = findPortal(
-                        request(network, url, step = "discovery"),
-                        network
-                    )
-                    if (deeper != null && !deeper.contains("1.254.254.254")) {
-                        return deeper
-                    }
-                } catch (_: Exception) {
-                    // fall through and return the splash URL
-                }
-            }
-            return url
-        }
-        return null
-    }
-
-    private fun probe(network: Network): Http {
-        var last: Exception? = null
-        for (url in CHECK_URLS) {
-            try {
-                return request(network, url, step = "probe")
-            } catch (e: Exception) {
-                last = e
-                Log.w(TAG, "probe $url failed: ${e.message}")
-            }
-        }
-        throw last ?: IOException("no probe endpoint")
-    }
-
-    /**
-     * Authoritative online check: 204 from a Google generate_204 endpoint.
-     *
-     * Sent as a proxy-form (absolute-URI) request target on a raw socket
-     * bound to the Wi-Fi network. The campus gateway Squid answers
-     * browser-style origin-form requests ("GET /generate_204" + Host:) with
-     * 400 ERR_INVALID_URL even for authenticated clients, which would make
-     * an online device look blocked forever; the same Squid proxies
-     * proxy-form requests normally and still intercepts them with the splash
-     * page pre-auth, so this form distinguishes the two states in both auth
-     * states. Only the response head is read - the status line carries
-     * everything this check needs (a 204 has no body, and the pre-auth
-     * splash body is parsed by findPortal from probe(), not here).
-     */
-    fun isOnline(network: Network, step: String = "online_check"): Boolean {
-        for (host in CHECK_IPS) {
-            try {
-                if (proxyFormStatus(network, host, step) == 204) return true
-            } catch (e: Exception) {
-                Log.w(TAG, "online check via $host failed: ${e.message}")
-            }
-        }
-        return false
-    }
-
-    private fun proxyFormStatus(network: Network, host: String, step: String): Int {
-        val span = SentryTracing.startHttpSpan(
-            "GET",
-            "http://connectivitycheck.gstatic.com/generate_204",
-            step
-        )
-        span?.setData("server.address", host)
-        val socket = try {
-            network.socketFactory.createSocket()
-        } catch (e: Throwable) {
-            SentryTracing.failHttpSpan(span, e)
-            throw e
-        }
-        try {
-            socket.tcpNoDelay = true
-            socket.connect(InetSocketAddress(host, 80), PROBE_TIMEOUT_MS)
-            socket.soTimeout = PROBE_TIMEOUT_MS
-            socket.getOutputStream().write(
-                ("GET http://connectivitycheck.gstatic.com/generate_204 " +
-                    "HTTP/1.1\r\n" +
-                    "Host: connectivitycheck.gstatic.com\r\n" +
-                    "User-Agent: CURAJ-AutoLogin/1.0 (Android)\r\n" +
-                    "Accept: */*\r\n" +
-                    "Connection: close\r\n\r\n").toByteArray()
-            )
-            val head = readResponseHead(socket.getInputStream())
-            val status = STATUS_LINE.find(head)?.groupValues?.get(1)?.toInt()
-                ?: throw IOException("unparseable probe response")
-            SentryTracing.finishHttpSpan(span, status)
-            return status
-        } catch (e: Throwable) {
-            SentryTracing.failHttpSpan(span, e)
-            throw e
-        } finally {
-            runCatching { socket.close() }
-        }
-    }
-
-    /** Read up to the blank line that ends the HTTP response head. */
-    private fun readResponseHead(input: InputStream): String {
-        val head = StringBuilder()
-        val chunk = ByteArray(4096)
-        while (head.length < MAX_HEAD_CHARS) {
-            val n = input.read(chunk)
-            if (n < 0) break
-            head.append(String(chunk, 0, n, Charsets.ISO_8859_1))
-            if (head.contains("\r\n\r\n")) break
-        }
-        return head.toString()
-    }
-
-    private fun request(
-        network: Network,
-        url: String,
-        method: String = "GET",
-        body: ByteArray? = null,
-        headers: Map<String, String> = emptyMap(),
-        step: String? = null
-    ): Http {
-        val span = SentryTracing.startHttpSpan(method, url, step)
-        var conn: HttpURLConnection? = null
-        try {
-            val opened = network.openConnection(URL(url)) as HttpURLConnection
-            conn = opened
-            opened.instanceFollowRedirects = false
-            opened.connectTimeout = 7000
-            opened.readTimeout = 7000
-            opened.requestMethod = method
-            opened.setRequestProperty("User-Agent", "CURAJ-AutoLogin/1.0 (Android)")
-            opened.setRequestProperty("Accept", "*/*")
-            for ((k, v) in headers) opened.setRequestProperty(k, v)
-
-            if (body != null) {
-                opened.doOutput = true
-                if (opened.getRequestProperty("Content-Type") == null) {
-                    opened.setRequestProperty(
-                        "Content-Type",
-                        "application/x-www-form-urlencoded"
-                    )
-                }
-                opened.outputStream.use { it.write(body) }
-            }
-
-            val code = opened.responseCode
-            span?.setData("http.response.status_code", code)
-            val stream = if (code in 200..299) opened.inputStream else opened.errorStream
-            val text = stream?.bufferedReader(Charsets.ISO_8859_1)
-                ?.use { readLimited(it) } ?: ""
-            val headersOut: Map<String, List<String>> = opened.headerFields.entries
-                .filter { it.key != null }
-                .associate { it.key!! to it.value }
-            SentryTracing.finishHttpSpan(span)
-            return Http(code, headersOut, text, url)
-        } catch (e: Throwable) {
-            SentryTracing.failHttpSpan(span, e)
-            throw e
-        } finally {
-            runCatching { conn?.disconnect() }
-        }
-    }
-
-    /** Read at most [MAX_RESPONSE_CHARS], so a hostile or endless body stays bounded. */
-    private fun readLimited(reader: Reader): String {
-        val out = StringBuilder()
-        val chunk = CharArray(8192)
-        while (out.length < MAX_RESPONSE_CHARS) {
-            val want = minOf(chunk.size, MAX_RESPONSE_CHARS - out.length)
-            val n = reader.read(chunk, 0, want)
-            if (n < 0) break
-            out.append(chunk, 0, n)
-        }
-        return out.toString()
-    }
-
-    /** Drop the query and fragment so logs never carry sc/session context. */
-    private fun redactUrl(url: String): String {
-        val cut = listOf(url.indexOf('?'), url.indexOf('#'))
-            .filter { it >= 0 }
-            .minOrNull()
-        return if (cut == null) url else url.substring(0, cut)
-    }
-
-    private val META = Regex("""(?i)URL=([^"'>\s]+)""")
-    private val JS = Regex("""(?i)location(?:\.href)?\s*=\s*["']([^"']+)["']""")
-    private val ANY = Regex("""https?://[^"'\s<>]+/userportal/\?[^"'\s<>]+""")
 
     private fun query(raw: String?): Map<String, String> =
         raw.orEmpty().split('&').mapNotNull {
