@@ -21,6 +21,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -49,9 +50,8 @@ class AutoLoginService : Service() {
     override fun onCreate() {
         super.onCreate()
         createChannel()
-        val initial = initialText()
-        lastNotificationText = initial
-        if (!enterForeground(initial)) {
+        lastNotificationText = TEXT_STARTING
+        if (!enterForeground(TEXT_STARTING)) {
             // Android 12+ only allows startForeground() when the system recorded
             // this start as foreground-eligible. A background resurrection (the
             // OEM killing the app and the system restarting this sticky service,
@@ -66,6 +66,18 @@ class AutoLoginService : Service() {
         }
         cancelResumeNotification()
         NetworkMonitor.start(this)
+
+        // The mandatory notification is posted already; reading encrypted
+        // preferences can wait for IO so a slow Keystore cannot delay startup.
+        scope.launch {
+            val text = withContext(Dispatchers.IO) { initialText() }
+            if (!foregroundDenied) {
+                synchronized(this@AutoLoginService) {
+                    // Do not overwrite a state a live attempt already posted.
+                    if (lastNotificationText == TEXT_STARTING) update(text)
+                }
+            }
+        }
 
         scope.launch {
             NetworkMonitor.wifi.collect { wifi ->
@@ -525,6 +537,7 @@ class AutoLoginService : Service() {
         private const val POLL_MS = 60_000L
         private const val COOLDOWN_MS = 20_000L
 
+        private const val TEXT_STARTING = "Auto-login is starting"
         private const val TEXT_RUNNING = "Auto-login is on"
         private const val TEXT_CONNECTED = "Connected - internet is working"
         private const val TEXT_DISCONNECTED = "Disconnected from campus Wi-Fi"

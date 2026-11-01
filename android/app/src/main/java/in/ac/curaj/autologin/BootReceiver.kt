@@ -12,15 +12,25 @@ class BootReceiver : BroadcastReceiver() {
             action != Intent.ACTION_MY_PACKAGE_REPLACED
         ) return
 
-        val enabled = runCatching { Prefs.enabled(ctx) }.getOrDefault(false)
-        val user = runCatching { Prefs.username(ctx) }.getOrDefault("")
-        val pass = runCatching { Prefs.password(ctx) }.getOrDefault("")
-        if (enabled && user.isNotBlank() && pass.isNotBlank()) {
-            runCatching {
-                ContextCompat.startForegroundService(
-                    ctx, Intent(ctx, AutoLoginService::class.java)
-                )
+        // Decrypting credentials can touch the Keystore, so keep it off the
+        // main thread; goAsync() keeps the receiver alive until finish().
+        val app = ctx.applicationContext
+        val pending = goAsync()
+        Thread {
+            try {
+                val enabled = runCatching { Prefs.enabled(app) }.getOrDefault(false)
+                val user = runCatching { Prefs.username(app) }.getOrDefault("")
+                val pass = runCatching { Prefs.password(app) }.getOrDefault("")
+                if (enabled && user.isNotBlank() && pass.isNotBlank()) {
+                    runCatching {
+                        ContextCompat.startForegroundService(
+                            app, Intent(app, AutoLoginService::class.java)
+                        )
+                    }
+                }
+            } finally {
+                pending.finish()
             }
-        }
+        }.start()
     }
 }
