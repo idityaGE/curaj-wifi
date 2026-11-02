@@ -22,16 +22,16 @@ Companion documents:
 | item | value |
 |---|---|
 | application id | `in.ac.curaj.autologin` |
-| version | **1.6.3-alpha4** (versionCode **13**) |
+| version | **1.6.3** (versionCode **14**) |
 | language | Kotlin |
 | minimum SDK | 26 (Android 8.0) |
 | target / compile SDK | 35 (Android 15) |
 | build | Gradle 8.14.6 wrapper, AGP 8.7.3, Kotlin 2.0.21, JDK 17 |
 | monitoring | Sentry Android 8.61.1, Gradle plugin 6.24.0 |
 | debug APK | `android/app/build/outputs/apk/debug/app-debug.apk` |
-| production APK | `dist/CURAJ-AutoLogin-1.6.3-alpha4.apk` (release-signed; build pending) |
-| production SHA-256 | set by the release build; see the release notes |
-| tested device | OnePlus CPH2793, Android 16 (1.5 live); 1.6.3-alpha4 build/signature verified, on-device pass pending |
+| production APK | `dist/CURAJ-AutoLogin-1.6.3.apk` (release-signed) |
+| production SHA-256 | `1a3df320d3594d15ae148175531546ef7c7f5c1ff914e6dbbe0463e7bbe54e5e` |
+| tested device | OnePlus CPH2793, Android 16 (1.5 live); 1.6.3 build/signature verified, on-device pass pending |
 | campus Wi-Fi | `CURAJ CAMPUS CONNECT`, `wlan0`, `10.50.13.252/20` |
 | portal | `http://122.252.242.93/userportal` |
 
@@ -897,7 +897,7 @@ denial/restart path still needs a live pass; see
 
 ---
 
-### 9.14 `portal.login` p95 above ten seconds (1.6.3-alpha4)
+### 9.14 `portal.login` p95 above ten seconds (1.6.3)
 
 **Symptom**
 
@@ -944,10 +944,10 @@ the 8–19 s tail.
 **Verification**
 
 `assembleDebug`, `lintDebug`, `assembleRelease`, and `lintRelease` pass; lint
-reports 34 warnings (one fewer than 1.6.2/alpha3) and no new ones. Sentry has
-no `1.6.3-alpha3` release or events because that build was never installed, so
-the latency improvement cannot be confirmed from existing telemetry. Install
-`1.6.3-alpha4` (`versionCode 13`) and check:
+reports 34 warnings (one fewer than 1.6.2) and no new ones. The 1.6.3 alpha
+builds were published but never installed on the test phone, so there is no
+alpha telemetry to compare against. Install `1.6.3` (`versionCode 14`) and
+check:
 
 * `CURAJ-WIFI-2` stops appearing;
 * `portal.login` p95 drops below 3 s on the same network;

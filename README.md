@@ -28,6 +28,7 @@ Everything here was derived from live traffic on `CURAJ CAMPUS CONNECT`
 | [docs/RELEASE-NOTES-1.6.md](docs/RELEASE-NOTES-1.6.md) | 1.6 highlights, install/upgrade notes, checksum, and verification status |
 | [docs/RELEASE-NOTES-1.6.1.md](docs/RELEASE-NOTES-1.6.1.md) | 1.6.1 patch notes: online-check fix for the gateway Squid, checksum, verification status |
 | [docs/RELEASE-NOTES-1.6.2.md](docs/RELEASE-NOTES-1.6.2.md) | 1.6.2 patch notes: foreground-service crash fix, per-request Sentry spans, checksum, verification status |
+| [docs/RELEASE-NOTES-1.6.3.md](docs/RELEASE-NOTES-1.6.3.md) | 1.6.3 release notes: portal-login latency fixes, 1.9 MB APK, portal/crash hardening, checksum, verification status |
 | [docs/RELEASE-NOTES-1.6.3-alpha3.md](docs/RELEASE-NOTES-1.6.3-alpha3.md) | 1.6.3-alpha3 notes: smaller APK, parallel online checks, attempt/logout/network hardening, checksum, verification status |
 | [docs/RELEASE-NOTES-1.6.3-alpha4.md](docs/RELEASE-NOTES-1.6.3-alpha4.md) | 1.6.3-alpha4 notes: parallel discovery, short split timeouts, bounded verification, OS fast path/cache, crash-guard hardening |
 | [docs/SESSION-MANAGEMENT.md](docs/SESSION-MANAGEMENT.md) | the two-session limit, self-care login, why the splash context cookie is required, and verified close semantics |
@@ -251,14 +252,13 @@ Config keys:
 ## 5. Android
 
 Source: `android/` (Kotlin, minSdk 26, targetSdk 35). Current APK is
-**1.6.2** (versionCode 9). The 1.6.2 patch fixes a crash loop when Android
-denies a background foreground-service start and adds per-request Sentry
-`http.client` child spans with outcome tags. The 1.6.1 patch fixed online
-detection after the campus gateway Squid began rejecting browser-style HTTP;
-the 1.6 release added Auto connect on by default plus Sentry crash, error, and
-performance reporting, and keeps the Material 3 dashboard, live network
-monitor, session sheet, and one-tap log out. Source context is uploaded for
-release builds.
+**1.6.3** (versionCode 14). The 1.6.3 release cuts portal-login tail latency
+(parallel discovery and online checks, shorter timeouts, bounded verification),
+shrinks the APK to 1.9 MB, and hardens the foreground-service start path. It
+includes the 1.6.2 crash-loop fix and per-request Sentry `http.client` child
+spans, the 1.6.1 online-detection fix, and the 1.6 Auto connect/Sentry work,
+and keeps the Material 3 dashboard, live network monitor, session sheet, and
+one-tap log out. Source context is uploaded for release builds.
 
 ```
 app/src/main/java/in/ac/curaj/autologin/

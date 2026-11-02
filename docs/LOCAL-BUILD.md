@@ -19,13 +19,13 @@ This machine now has:
 Build output:
 
 ```
-app-release.apk 9.3 MB
+app-release.apk 1.9 MB
 package         in.ac.curaj.autologin
-versionName     1.6.2  (versionCode 9)
+versionName     1.6.3  (versionCode 14)
 minSdk          26
 targetSdk       35
 signature       APK Signature Scheme v2 (release key)
-sha256          1e192fa13e36247454728fe23fd12f13a1cb84dbddb220144b73752e224c1832
+sha256          1a3df320d3594d15ae148175531546ef7c7f5c1ff914e6dbbe0463e7bbe54e5e
 ```
 
 ---

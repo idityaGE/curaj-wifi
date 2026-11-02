@@ -190,8 +190,8 @@ client treated it as a hard failure and waited a full backoff interval.
 
 Version 1.3 detects the phrase and does **not** POST a second `newlogin.do`.
 It polls the probe for up to six seconds and reports success as soon as the
-gate opens. Current builds (1.6.3-alpha4 and later) poll the authoritative
-online check with an 8-second deadline instead. If the portal is still working,
+gate opens. Current builds (1.6.3 and later) poll the authoritative online
+check with an 8-second deadline instead. If the portal is still working,
 the service retries after three seconds (bounded to 10 transient retries)
 without posting a false failure notification.
 
@@ -313,17 +313,17 @@ were prepared. Do them with the cable or wireless debugging connected:
 > child spans below appear in `portal.login`, `portal.logout`,
 > `portal.sessions.list`, and `portal.sessions.close`.
 >
-> **1.6.3-alpha4 addendum:** these checks still apply (release string
-> `in.ac.curaj.autologin@1.6.3-alpha4+13`). alpha4 races portal discovery as
-> well as the online check, shortens probe timeouts, replaces fixed
-> verification sleeps with bounded polls, and adds `portal.online_check` /
-> `portal.probe` parent spans. On a slow or partly blackholed network, confirm:
-> `portal.login` finishes in under 3 s in the common case; the trace shows
-> parallel children under the two parent spans, not sequential 6–7 s
-> `online_check` spans; and `CURAJ-WIFI-2` no longer appears after a denied
-> background start. Also confirm a reboot still starts the service when
-> **Auto connect** is on, and that it does not post a lingering notification
-> when the switch is off.
+> **1.6.3 addendum (final):** these checks still apply (release string
+> `in.ac.curaj.autologin@1.6.3+14`). 1.6.3 races portal discovery as well as
+> the online check, shortens probe timeouts, replaces fixed verification
+> sleeps with bounded polls, and adds `portal.online_check` / `portal.probe`
+> parent spans. The alpha4 build had the same behavior. On a slow or partly
+> blackholed network, confirm: `portal.login` finishes in under 3 s in the
+> common case; the trace shows parallel children under the two parent spans,
+> not sequential 6–7 s `online_check` spans; and `CURAJ-WIFI-2` no longer
+> appears after a denied background start. Also confirm a reboot still starts
+> the service when **Auto connect** is on, and that it does not post a
+> lingering notification when the switch is off.
 
 1. **Fresh install default**
    - Uninstall the app, install 1.6, and open it.
@@ -414,6 +414,8 @@ were prepared. Do them with the cable or wireless debugging connected:
   `906887ea15e30c153cff9cd3fd84528514f6215aa86be05448f2fa17ee835faf`.
 * The 1.6.2 release APK is versionCode 9, SHA-256
   `1e192fa13e36247454728fe23fd12f13a1cb84dbddb220144b73752e224c1832`.
+* The 1.6.3 release APK is versionCode 14, SHA-256
+  `1a3df320d3594d15ae148175531546ef7c7f5c1ff914e6dbbe0463e7bbe54e5e`.
   The distributed APK is release-signed; the debug variant is only for local
   development.
 * Android may show “unknown app” warnings when installing a release APK by

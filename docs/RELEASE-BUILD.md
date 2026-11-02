@@ -37,28 +37,29 @@ android/app/build/outputs/apk/release/app-release.apk
 A copy prepared for sharing:
 
 ```
-dist/CURAJ-AutoLogin-1.6.2.apk
-dist/SHA256SUMS.txt
-dist/INSTALL.txt
+dist/CURAJ-AutoLogin-1.6.3.apk
+dist/SHA256SUMS-1.6.3.txt
+dist/INSTALL-1.6.3.txt
 ```
 
 | item | value |
 |---|---|
 | package | `in.ac.curaj.autologin` |
-| version | 1.6.2 (versionCode 9) |
-| size | 9.3 MB (9,702,748 bytes) |
-| SHA-256 | `1e192fa13e36247454728fe23fd12f13a1cb84dbddb220144b73752e224c1832` |
+| version | 1.6.3 (versionCode 14) |
+| size | 1.9 MB (1,908,617 bytes) |
+| SHA-256 | `1a3df320d3594d15ae148175531546ef7c7f5c1ff914e6dbbe0463e7bbe54e5e` |
 | APK signature | APK Signature Scheme v2, verified |
 | certificate SHA-256 | `55da02f424dbf6a4dfd9521b236c1bba4f598fe23db477afceea82fa894ac092` |
 
 The code carries the tested 1.3 login/logout path, the 1.4 session management,
 the 1.5 Material 3 dashboard and `EPERM` retry, the 1.6 Auto connect and
-Sentry work, the 1.6.1 proxy-form online check, and the 1.6.2 foreground-start
-guard plus per-request Sentry spans. Release builds are `debuggable=false` and
-omit the debug-only **Send test event** menu.
+Sentry work, the 1.6.1 proxy-form online check, the 1.6.2 foreground-start
+guard plus per-request Sentry spans, and the 1.6.3 login-latency, APK-size,
+and portal/crash hardening. Release builds are `debuggable=false` and omit the
+debug-only **Send test event** menu.
 
 Clean build, lint, unit-test tasks, APK signature, manifest, embedded DSN, and
-source-bundle upload were verified for 1.6.2. The physical-device checks in
+source-bundle upload were verified for 1.6.3. The physical-device checks in
 [ANDROID-TEST.md](ANDROID-TEST.md#86-16-auto-connect-and-sentry-pending-on-device)
 were not rerun because no phone was connected at release time; run them before
 wide distribution.
@@ -190,7 +191,7 @@ Expected:
 ```
 Verifies
 Verified using v2 scheme (APK Signature Scheme v2): true
-package: name='in.ac.curaj.autologin' versionCode='9' versionName='1.6.2'
+package: name='in.ac.curaj.autologin' versionCode='14' versionName='1.6.3'
 application-label:'CURAJ Auto Login'
 ```
 
@@ -201,17 +202,17 @@ Then prepare the distribution copy:
 
 ```bash
 mkdir -p ~/curaj-wifi/dist
-cp "$APK" ~/curaj-wifi/dist/CURAJ-AutoLogin-1.6.2.apk
+cp "$APK" ~/curaj-wifi/dist/CURAJ-AutoLogin-1.6.3.apk
 cd ~/curaj-wifi/dist
-sha256sum CURAJ-AutoLogin-1.6.2.apk > SHA256SUMS.txt
+sha256sum CURAJ-AutoLogin-1.6.3.apk > SHA256SUMS-1.6.3.txt
 ```
 
 ---
 
 ## 7. How friends install it
 
-Send them `CURAJ-AutoLogin-1.6.2.apk` (and optionally `SHA256SUMS.txt` and
-`INSTALL.txt`).
+Send them `CURAJ-AutoLogin-1.6.3.apk` (and optionally `SHA256SUMS-1.6.3.txt`
+and `INSTALL-1.6.3.txt`).
 
 On the phone:
 
@@ -270,15 +271,18 @@ locally, then tag and publish it with `gh`:
 
 ```bash
 cd ~/curaj-wifi
-git tag -a v1.6.2 -m "CURAJ Auto Login 1.6.2"
-git push origin v1.6.2
-gh release create v1.6.2 \
-  dist/CURAJ-AutoLogin-1.6.2.apk \
-  dist/SHA256SUMS.txt \
-  dist/INSTALL.txt \
-  --title "CURAJ Auto Login 1.6.2" \
-  --notes-file docs/RELEASE-NOTES-1.6.2.md
+git tag -a v1.6.3 -m "CURAJ Auto Login 1.6.3"
+git push origin v1.6.3
+gh release create v1.6.3 \
+  dist/CURAJ-AutoLogin-1.6.3.apk \
+  dist/SHA256SUMS-1.6.3.txt \
+  dist/INSTALL-1.6.3.txt \
+  --title "CURAJ Auto Login 1.6.3" \
+  --notes-file docs/RELEASE-NOTES-1.6.3.md
 ```
+
+Add `--prerelease` for an alpha or beta build; omit it for a production
+release so GitHub marks it as the latest release.
 
 The release tag must point at the commit whose `versionCode` and `versionName`
 are in the APK. Do not publish an unsigned or stale `app-release.apk`.
